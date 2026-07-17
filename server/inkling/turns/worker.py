@@ -20,8 +20,8 @@ from inkling.db.client import Database
 from inkling.db.queries import triggers as triggers_q
 from inkling.db.queries import turns as turns_q
 from inkling.inference.gateway import InferenceGateway, emit_commands_tool
-from inkling.prompts.system import SYSTEM_PROMPT
 from inkling.turns.commit import commit_turn
+from inkling.turns.context import assemble_context
 from inkling.turns.stream import StreamEvent
 
 log = logging.getLogger(__name__)
@@ -227,23 +227,11 @@ class Worker:
             heart.cancel()
 
     async def _assemble_context(self, trigger: dict[str, Any]) -> tuple[str, str]:
-        """Placeholder for §8: returns (system, context) strings.
-
-        Context assembly reads a consistent snapshot and closes the transaction
-        before inference (§5.3). Until §8 lands, context is the trigger's own
-        text plus its provenance — enough to exercise the pipeline, but not the
-        stable→volatile §8.1 assembly.
-        """
-        payload = trigger["payload"] or {}
-        text = payload.get("text", "")
-        if trigger["source"] == "chat":
-            context = f"User message: {text}"
-        else:
-            context = (
-                f"[{trigger['source']} trigger"
-                f"{' ' + trigger['source_ref'] if trigger['source_ref'] else ''}] {text}"
-            )
-        return SYSTEM_PROMPT, context
+        """§8 assembly: one snapshot transaction, closed before inference (§5.3)."""
+        assembled = await assemble_context(
+            self.db, user_id=self.user_id, trigger=trigger
+        )
+        return assembled.system, assembled.context
 
     async def _heartbeat(self, turn_id: int, lease_lost: asyncio.Event) -> None:
         while True:

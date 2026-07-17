@@ -15,6 +15,12 @@ ORDER BY version DESC
 LIMIT 1
 """
 
+_CURRENT_MANY = """
+SELECT DISTINCT ON (kind) * FROM docs
+WHERE kind = ANY(%s)
+ORDER BY kind, version DESC
+"""
+
 # The version is computed inside the INSERT rather than read-then-written, so
 # two writers racing collide on UNIQUE (user_id, kind, version) instead of
 # silently overwriting one another's version number.
@@ -29,6 +35,14 @@ RETURNING *
 async def current(conn: AsyncConnection, kind: str) -> dict[str, Any] | None:
     cur = await conn.execute(_CURRENT, (kind,))
     return await cur.fetchone()
+
+
+async def current_many(
+    conn: AsyncConnection, kinds: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Latest version of each requested kind, keyed by kind; absent = never written."""
+    cur = await conn.execute(_CURRENT_MANY, (kinds,))
+    return {row["kind"]: row for row in await cur.fetchall()}
 
 
 async def insert_next_version(

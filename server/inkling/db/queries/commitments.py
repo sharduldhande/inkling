@@ -65,6 +65,28 @@ WHERE commitment_id = %s AND status = 'pending'
 RETURNING id
 """
 
+# §8.1 section 7: the lead-time window. A commitment is "due/upcoming" when its
+# next live occurrence (fire_at = due_at - lead_time) or its due_at falls before
+# the horizon — which includes everything overdue. Undated open commitments are
+# open promises with nothing to fire, so they surface here too, after the dated
+# ones; the horizon can't apply to them.
+_UPCOMING = """
+SELECT c.id, c.title, c.body, c.due_at, c.recurrence, c.status, c.version,
+       o.fire_at AS next_fire_at, o.status AS occurrence_status
+FROM commitments c
+LEFT JOIN LATERAL (
+  SELECT fire_at, status FROM commitment_occurrences
+  WHERE commitment_id = c.id AND status IN ('pending', 'eligible', 'leased')
+  ORDER BY fire_at
+  LIMIT 1
+) o ON true
+WHERE c.status = 'open'
+  AND (o.fire_at <= %s OR c.due_at <= %s
+       OR (o.fire_at IS NULL AND c.due_at IS NULL))
+ORDER BY COALESCE(o.fire_at, c.due_at) ASC NULLS LAST, c.id
+LIMIT %s
+"""
+
 _INSERT_OCCURRENCE = """
 INSERT INTO commitment_occurrences (user_id, commitment_id, fire_at)
 VALUES (%s, %s, %s)
@@ -150,6 +172,13 @@ async def set_status(
 ) -> dict[str, Any] | None:
     cur = await conn.execute(_SET_STATUS, (status, commitment_id, version))
     return await cur.fetchone()
+
+
+async def upcoming(
+    conn: AsyncConnection, *, horizon: Any, limit: int
+) -> list[dict[str, Any]]:
+    cur = await conn.execute(_UPCOMING, (horizon, horizon, limit))
+    return await cur.fetchall()
 
 
 async def reschedule_pending(
