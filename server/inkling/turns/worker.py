@@ -203,7 +203,7 @@ class Worker:
                 raise LeaseLost(f"lease on turn {turn_id} expired mid-stream")
             result = turn_task.result()  # raises if the gateway failed
 
-            await commit_turn(
+            committed = await commit_turn(
                 self.db,
                 user_id=self.user_id,
                 trigger=trigger,
@@ -212,10 +212,14 @@ class Worker:
                 next_seq=seq + 1,
                 actor=self.id,
             )
-            # commit_turn persisted these two; republish so live sockets see the
-            # end of the stream without waiting to poll turn_events.
-            await self._publish(trigger_id, turn_id, seq + 1, "done", {"done": True})
-            await self._publish(trigger_id, turn_id, seq + 2, "exit", {"exit": 0})
+            # Republish what commit_turn persisted so live sockets see the end
+            # of the stream without waiting to poll turn_events. It returns the
+            # events rather than us assuming the shape: a turn with rejected
+            # commands (§9.2) prepends a correction delta before done/exit.
+            for event in committed:
+                await self._publish(
+                    trigger_id, turn_id, event.seq, event.kind, event.data
+                )
         except Exception as exc:
             log.exception("turn %s failed for user %s", turn_id, self.user_id)
             await self._fail_turn(trigger, turn_id, seq + 1, exc)

@@ -18,7 +18,11 @@ from psycopg import AsyncConnection
 from inkling.db.client import Database
 from inkling.db.queries import triggers as triggers_q
 from inkling.db.queries import turns as turns_q
+from inkling.db.queries import users as users_q
 from inkling.inference.gateway import TurnResult
+from inkling.turns.apply import apply_command
+from inkling.turns.stream import StreamEvent
+from inkling.turns.validate import validate_commands
 
 log = logging.getLogger(__name__)
 
@@ -55,36 +59,90 @@ async def commit_turn(
     result: TurnResult,
     next_seq: int,
     actor: str,
-) -> None:
+) -> list[StreamEvent]:
     """Apply a completed turn's effects atomically and close it out.
 
     `next_seq` continues the turn_events numbering the streaming loop left off
-    at, so Last-Event-ID resume sees one contiguous sequence (§5.5).
+    at, so Last-Event-ID resume sees one contiguous sequence (§5.5). Returns the
+    events this function persisted, in order, so the caller can republish them
+    to live sockets without having to predict the numbering.
 
-    Command APPLICATION is not wired yet: commands are §9.1-validated Pydantic
-    objects by the time they arrive here, but the §9.2 validation layer and the
-    per-command mutations don't exist, so every command is recorded to
-    audit_log and applied to nothing. Real adapters now exist and can emit
-    commands — §9.2 must land before this runs against a real user, or the
-    model's claims and reality will diverge (exactly what D4 exists to
-    prevent).
+    Commands go through §9.2 here: validated against current state, applied if
+    legal, and every outcome — accepted or rejected — written to audit_log.
+    Rejections never fail the turn; they become a note appended to the assistant
+    text so the model's claim and reality can't diverge (D4).
     """
+    events: list[StreamEvent] = []
+    trigger_id = int(trigger["id"])
+
     async with db.with_tenant(user_id) as conn:
-        for command in result.commands:
+        user = await users_q.get(conn, user_id)
+        assert user is not None  # the turn exists, so its user does
+
+        # Validation and application share this transaction: a check against a
+        # row a concurrent turn could move between check and write would prove
+        # nothing (§9.2).
+        verdict = await validate_commands(conn, user=user, commands=result.commands)
+
+        for index, command in enumerate(verdict.accepted):
+            detail = await apply_command(
+                conn, command, user=user, turn_id=turn_id, index=index
+            )
             await _audit(
                 conn,
                 user_id=user_id,
                 actor=actor,
-                action="command_not_implemented",
-                detail={"command": command.model_dump(mode="json"), "turn_id": turn_id},
+                action="command_applied",
+                detail={
+                    "command": command.model_dump(mode="json"),
+                    "turn_id": turn_id,
+                    "result": detail,
+                },
             )
-        if result.commands:
-            log.warning(
-                "turn %s emitted %d command(s) with §9.2 unimplemented; recorded "
-                "to audit_log and applied to NOTHING",
+        for rejection in verdict.rejected:
+            await _audit(
+                conn,
+                user_id=user_id,
+                actor=actor,
+                action="command_rejected",
+                detail={
+                    "command": rejection.command.model_dump(mode="json"),
+                    "turn_id": turn_id,
+                    "reason": rejection.reason,
+                },
+            )
+
+        text = result.text
+        if verdict.rejected:
+            log.info(
+                "turn %s: applied %d command(s), rejected %d",
                 turn_id,
-                len(result.commands),
+                len(verdict.accepted),
+                len(verdict.rejected),
             )
+            notes = verdict.notes()
+            text = f"{text}\n\n{notes}" if text else notes
+            # The deltas already streamed are the model's claim; this correction
+            # has to reach the same socket, not just the transcript.
+            await turns_q.append_event(
+                conn,
+                user_id=user_id,
+                turn_id=turn_id,
+                seq=next_seq,
+                kind="text_delta",
+                data={"text": f"\n\n{notes}"},
+            )
+            events.append(
+                StreamEvent(
+                    user_id=user_id,
+                    trigger_id=trigger_id,
+                    turn_id=turn_id,
+                    seq=next_seq,
+                    kind="text_delta",
+                    data={"text": f"\n\n{notes}"},
+                )
+            )
+            next_seq += 1
 
         payload = trigger["payload"] or {}
         if trigger["source"] == "chat" and payload.get("text"):
@@ -95,32 +153,39 @@ async def commit_turn(
                 role="user",
                 text=payload["text"],
             )
-        if result.text:
+        if text:
+            # The transcript stores the text *with* the rejection notes: it is
+            # what the user saw, and it's what the next turn's context replays.
             await _transcript(
                 conn,
                 user_id=user_id,
                 turn_id=turn_id,
                 role="assistant",
-                text=result.text,
+                text=text,
             )
 
         # v1 stream shapes, byte-compatible: text deltas, then done, then exit.
-        await turns_q.append_event(
-            conn,
-            user_id=user_id,
-            turn_id=turn_id,
-            seq=next_seq,
-            kind="done",
-            data={"done": True},
-        )
-        await turns_q.append_event(
-            conn,
-            user_id=user_id,
-            turn_id=turn_id,
-            seq=next_seq + 1,
-            kind="exit",
-            data={"exit": 0},
-        )
+        for offset, (kind, data) in enumerate(
+            (("done", {"done": True}), ("exit", {"exit": 0}))
+        ):
+            await turns_q.append_event(
+                conn,
+                user_id=user_id,
+                turn_id=turn_id,
+                seq=next_seq + offset,
+                kind=kind,
+                data=data,
+            )
+            events.append(
+                StreamEvent(
+                    user_id=user_id,
+                    trigger_id=trigger_id,
+                    turn_id=turn_id,
+                    seq=next_seq + offset,
+                    kind=kind,
+                    data=data,
+                )
+            )
 
         await turns_q.finish(
             conn,
@@ -130,4 +195,6 @@ async def commit_turn(
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
         )
-        await triggers_q.set_status(conn, int(trigger["id"]), "done", turn_id=turn_id)
+        await triggers_q.set_status(conn, trigger_id, "done", turn_id=turn_id)
+
+    return events

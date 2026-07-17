@@ -26,8 +26,8 @@ async def clean(migrated: str, dsn: str):
     """
     with psycopg.connect(dsn) as conn:
         conn.execute(
-            "TRUNCATE turn_events, turns, triggers, transcript, audit_log "
-            "RESTART IDENTITY CASCADE"
+            "TRUNCATE turn_events, turns, triggers, transcript, audit_log, "
+            "events RESTART IDENTITY CASCADE"
         )
         conn.commit()
     yield
@@ -344,7 +344,10 @@ async def test_non_chat_turn_records_no_user_transcript(db: Database):
     assert [r["role"] for r in rows] == ["assistant"]
 
 
-async def test_commands_are_audited_not_applied_until_9_2(db: Database):
+async def test_commands_are_applied_and_audited_through_the_worker(db: Database):
+    """The whole path (§9.2): the worker's turn validates, applies, and audits a
+    command — the row actually lands, not just an audit entry. Fine-grained
+    validation/application cases live in test_commands.py; this pins the seam."""
     from inkling.turns.commands import AppendEvent
 
     await ingress.submit(db, user_id=USER_A, source="chat", payload={"text": "hi"})
@@ -356,9 +359,12 @@ async def test_commands_are_audited_not_applied_until_9_2(db: Database):
     async with db.with_tenant(USER_A) as conn:
         cur = await conn.execute("SELECT action, detail FROM audit_log")
         audits = await cur.fetchall()
-    assert [a["action"] for a in audits] == ["command_not_implemented"]
-    assert audits[0]["detail"]["command"]["type"] == "AppendEvent"
+        cur = await conn.execute("SELECT kind, note FROM events")
+        events = await cur.fetchall()
+
+    assert [a["action"] for a in audits] == ["command_applied"]
     assert audits[0]["detail"]["command"]["note"] == "user walked"
+    assert (events[0]["kind"], events[0]["note"]) == ("note", "user walked")
 
 
 async def test_subscriber_sees_the_whole_stream_live(db: Database):

@@ -1,0 +1,330 @@
+"""Domain validation for model commands (§9.2) — code, not prompt.
+
+§9.1 already proved a command is *well-formed*. This layer decides whether it
+is *legal*: does the tenant own what it references, is the state transition
+allowed, does the optimistic-concurrency version still match, does closing this
+commitment orphan unresolved children.
+
+Two rules govern everything here:
+
+1. A rejection is never a turn failure. Rejected commands are logged and the
+   caller appends a short note to the assistant text, so the model's claim and
+   reality can't silently diverge (D4). A turn with three good commands and one
+   illegal one applies three.
+2. Validation is advisory about tenancy, never the enforcement. RLS is the
+   backstop; these checks exist to produce a clean reason string instead of a
+   permission error. Every lookup below runs inside the tenant transaction, so
+   another user's id is simply invisible and reads as "not found".
+
+Validation runs inside the same transaction as application (§5.4) — a check
+against a row that a concurrent turn could change between check and write would
+be worth nothing otherwise.
+"""
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
+from typing import Any
+
+from psycopg import AsyncConnection
+
+from inkling.db.queries import commitments as commitments_q
+from inkling.db.queries import docs as docs_q
+from inkling.db.queries import events as events_q
+from inkling.db.queries import wakeups as wakeups_q
+from inkling.turns.commands import (
+    AppendEvent,
+    CancelWakeup,
+    Command,
+    CompleteCommitment,
+    CreateCalendarEvent,
+    Notify,
+    ScheduleWakeup,
+    SnoozeCommitment,
+    UpdateWorkingState,
+)
+
+log = logging.getLogger(__name__)
+
+# §8.1: working_state is a 1200-token hard cap.
+WORKING_STATE_TOKEN_CAP = 1200
+
+# §9.2: a rewrite that replaces more than this much of the doc is a red flag —
+# the model is discarding state rather than editing it. Consolidation is the
+# one job allowed to do that, and it must say so.
+MAX_REPLACEMENT_FRACTION = 0.8
+
+# §9.2: an event may be backdated freely (we often learn late) but must not be
+# dated into the future — that's a prediction, not an observation.
+FUTURE_EVENT_TOLERANCE = timedelta(minutes=5)
+
+# §9.2: calendar events longer than this are a parse error, not a plan.
+MAX_CALENDAR_DURATION = timedelta(hours=24)
+
+# Markers that say a working-state line is closed. Deliberately generous: a
+# false "closed" only costs us a guard, a false "open" blocks a legitimate
+# completion and annoys the user (§9.2 heuristic, not a parser).
+_CLOSED_MARKERS = ("[x]", "[X]", "~~", "(done", "done)", "✓", "✔")
+_BULLETS = ("-", "*", "+", "•")
+
+
+@dataclass(frozen=True)
+class Rejection:
+    """A command that will not be applied, and the reason the model gets told."""
+
+    command: Command
+    reason: str
+
+    def note(self) -> str:
+        """The §9.2 note appended to the assistant text."""
+        return f"(couldn't complete {self.command.type}: {self.reason})"
+
+
+@dataclass(frozen=True)
+class Validated:
+    accepted: list[Command]
+    rejected: list[Rejection]
+
+    def notes(self) -> str:
+        return "\n".join(r.note() for r in self.rejected)
+
+
+def estimate_tokens(text: str) -> int:
+    """Cheap tokenizer (§8.1): ~4 chars per token, no model dependency.
+
+    Deliberately not tiktoken — this gates a doc write, and being within ~10%
+    is worth more than a tokenizer dependency that must match whichever model
+    the user's profile routes to today.
+    """
+    return (len(text) + 3) // 4
+
+
+def _aware(value: datetime) -> datetime:
+    """Treat a naive datetime as UTC — models omit the offset constantly."""
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _is_open_line(line: str) -> bool:
+    """A list item with no closure marker is an open loop (§8.2)."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    is_item = stripped[0] in _BULLETS or (
+        stripped[0].isdigit() and "." in stripped[:3]
+    )
+    if not is_item:
+        return False
+    return not any(marker in stripped for marker in _CLOSED_MARKERS)
+
+
+def _has_unresolved_children(working_state: str, needles: list[str]) -> bool:
+    """§9.2 closure guard.
+
+    §8.2 makes indentation express containment, so the check is structural: find
+    the line naming this commitment, then look at the block indented under it.
+    Any open child means completing the parent would strand it.
+    """
+    lines = working_state.splitlines()
+    for i, line in enumerate(lines):
+        haystack = line.lower()
+        if not any(n for n in needles if n and n.lower() in haystack):
+            continue
+        parent_indent = _indent(line)
+        for child in lines[i + 1 :]:
+            if not child.strip():
+                continue
+            if _indent(child) <= parent_indent:
+                break  # dedent ends this parent's block
+            if _is_open_line(child):
+                return True
+        return False  # matched, and every child was closed
+    return False  # not mentioned in working_state at all
+
+
+async def _validate_append_event(
+    conn: AsyncConnection, cmd: AppendEvent
+) -> str | None:
+    if cmd.occurred_at is not None:
+        drift = _aware(cmd.occurred_at) - datetime.now(timezone.utc)
+        if drift > FUTURE_EVENT_TOLERANCE:
+            return (
+                f"occurred_at is {int(drift.total_seconds() // 60)} min in the "
+                "future; events record what happened, not what will"
+            )
+    if cmd.habit_id is not None and await events_q.habit(conn, cmd.habit_id) is None:
+        return f"unknown habit '{cmd.habit_id}'"
+    return None
+
+
+async def _load_open_commitment(
+    conn: AsyncConnection, commitment_id: int, expected_version: int
+) -> tuple[dict[str, Any] | None, str | None]:
+    row = await commitments_q.get(conn, commitment_id)
+    if row is None:
+        return None, f"commitment {commitment_id} not found"
+    if row["status"] != "open":
+        return None, f"commitment {commitment_id} is already {row['status']}"
+    if row["version"] != expected_version:
+        return None, (
+            f"commitment {commitment_id} changed since you read it "
+            f"(expected version {expected_version}, current {row['version']}); "
+            "re-read it and retry"
+        )
+    return row, None
+
+
+async def _validate_complete(
+    conn: AsyncConnection, cmd: CompleteCommitment
+) -> str | None:
+    row, reason = await _load_open_commitment(conn, cmd.id, cmd.expected_version)
+    if reason is not None:
+        return reason
+    assert row is not None
+
+    doc = await docs_q.current(conn, "working_state")
+    if doc and _has_unresolved_children(
+        doc["content"], [row.get("source_ref"), row["title"]]
+    ):
+        return "children unresolved — confirm with user"
+    return None
+
+
+async def _validate_snooze(conn: AsyncConnection, cmd: SnoozeCommitment) -> str | None:
+    _, reason = await _load_open_commitment(conn, cmd.id, cmd.expected_version)
+    return reason
+
+
+async def _validate_upsert(conn: AsyncConnection, cmd: Any) -> str | None:
+    if cmd.due_at is not None and cmd.recurrence is not None:
+        return "a commitment is one-shot (due_at) or recurring (recurrence), not both"
+    if cmd.id is None:
+        return None  # a create: nothing to reference, nothing to race
+    if cmd.expected_version is None:
+        return f"updating commitment {cmd.id} requires expected_version"
+    _, reason = await _load_open_commitment(conn, cmd.id, cmd.expected_version)
+    return reason
+
+
+async def _validate_update_working_state(
+    conn: AsyncConnection, cmd: UpdateWorkingState
+) -> str | None:
+    if not cmd.reason.strip():
+        return "reason is required"
+
+    tokens = estimate_tokens(cmd.new_content)
+    if tokens > WORKING_STATE_TOKEN_CAP:
+        return (
+            f"working_state would be ~{tokens} tokens, over the "
+            f"{WORKING_STATE_TOKEN_CAP} cap; close or archive loops first"
+        )
+
+    current = await docs_q.current(conn, "working_state")
+    if current is None or not current["content"].strip():
+        return None  # first write: nothing to preserve, nothing to check
+
+    is_consolidation = cmd.reason.strip().lower().startswith("consolidation")
+    if is_consolidation:
+        return None
+    similarity = SequenceMatcher(
+        None, current["content"], cmd.new_content, autojunk=False
+    ).ratio()
+    if (1 - similarity) > MAX_REPLACEMENT_FRACTION:
+        return (
+            f"this rewrites {round((1 - similarity) * 100)}% of working_state; "
+            "edit it incrementally, or say why under a 'consolidation' reason"
+        )
+    return None
+
+
+async def _validate_schedule_wakeup(
+    conn: AsyncConnection, cmd: ScheduleWakeup
+) -> str | None:
+    if cmd.fire_at is None and cmd.offset_minutes is None:
+        return "give either fire_at or offset_minutes"
+    if cmd.fire_at is not None and cmd.offset_minutes is not None:
+        return "give either fire_at or offset_minutes, not both"
+    if cmd.offset_minutes is not None and cmd.offset_minutes <= 0:
+        return "offset_minutes must be positive — wakeups fire in the future"
+    if cmd.fire_at is not None and _aware(cmd.fire_at) <= datetime.now(timezone.utc):
+        return "fire_at is in the past"
+    if not cmd.purpose.strip():
+        return "purpose is required — a wakeup with no purpose can't be acted on"
+    return None
+
+
+async def _validate_cancel_wakeup(
+    conn: AsyncConnection, cmd: CancelWakeup
+) -> str | None:
+    row = await wakeups_q.get(conn, cmd.id)
+    if row is None:
+        return f"wakeup {cmd.id} not found"
+    if row["status"] != "active":
+        return f"wakeup {cmd.id} is already {row['status']}"
+    return None
+
+
+async def _validate_calendar(
+    conn: AsyncConnection, cmd: CreateCalendarEvent, *, user: dict[str, Any]
+) -> str | None:
+    if not user["calendar_enabled"]:
+        return "calendar is not enabled for this user"
+    duration = _aware(cmd.ends_at) - _aware(cmd.starts_at)
+    if duration <= timedelta(0):
+        return "ends_at must be after starts_at"
+    if duration >= MAX_CALENDAR_DURATION:
+        return f"event spans {duration} — longer than a day is almost certainly a mistake"
+    # §12 (the calendar adapter) isn't built. Rejecting here rather than in
+    # apply.py keeps the honest-degradation path identical to every other
+    # rejection: the user is told it didn't happen, in the reply, every time.
+    return "calendar writes aren't available yet"
+
+
+async def _validate_notify(conn: AsyncConnection, cmd: Notify) -> str | None:
+    if not cmd.body.strip():
+        return "body is required"
+    return None
+
+
+async def validate_commands(
+    conn: AsyncConnection, *, user: dict[str, Any], commands: list[Command]
+) -> Validated:
+    """Split the model's commands into what may be applied and what may not.
+
+    `conn` must already be inside the tenant transaction that will apply the
+    accepted commands.
+    """
+    accepted: list[Command] = []
+    rejected: list[Rejection] = []
+
+    for cmd in commands:
+        if isinstance(cmd, AppendEvent):
+            reason = await _validate_append_event(conn, cmd)
+        elif isinstance(cmd, CompleteCommitment):
+            reason = await _validate_complete(conn, cmd)
+        elif isinstance(cmd, SnoozeCommitment):
+            reason = await _validate_snooze(conn, cmd)
+        elif isinstance(cmd, UpdateWorkingState):
+            reason = await _validate_update_working_state(conn, cmd)
+        elif isinstance(cmd, ScheduleWakeup):
+            reason = await _validate_schedule_wakeup(conn, cmd)
+        elif isinstance(cmd, CancelWakeup):
+            reason = await _validate_cancel_wakeup(conn, cmd)
+        elif isinstance(cmd, CreateCalendarEvent):
+            reason = await _validate_calendar(conn, cmd, user=user)
+        elif isinstance(cmd, Notify):
+            reason = await _validate_notify(conn, cmd)
+        else:  # UpsertCommitment
+            reason = await _validate_upsert(conn, cmd)
+
+        if reason is None:
+            accepted.append(cmd)
+        else:
+            log.info("rejecting %s: %s", cmd.type, reason)
+            rejected.append(Rejection(command=cmd, reason=reason))
+
+    return Validated(accepted=accepted, rejected=rejected)
