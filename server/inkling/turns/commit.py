@@ -21,6 +21,7 @@ from inkling.db.queries import triggers as triggers_q
 from inkling.db.queries import turns as turns_q
 from inkling.db.queries import users as users_q
 from inkling.inference.gateway import TurnResult
+from inkling.jobs.consolidate import is_consolidation_trigger
 from inkling.turns.apply import apply_command
 from inkling.turns.stream import StreamEvent
 from inkling.turns.validate import validate_commands
@@ -82,8 +83,14 @@ async def commit_turn(
 
         # Validation and application share this transaction: a check against a
         # row a concurrent turn could move between check and write would prove
-        # nothing (§9.2).
-        verdict = await validate_commands(conn, user=user, commands=result.commands)
+        # nothing (§9.2). Consolidation turns (§13.1) unlock the job-only
+        # commands; every other turn gets them rejected.
+        verdict = await validate_commands(
+            conn,
+            user=user,
+            commands=result.commands,
+            consolidation=is_consolidation_trigger(trigger),
+        )
 
         for index, command in enumerate(verdict.accepted):
             detail = await apply_command(

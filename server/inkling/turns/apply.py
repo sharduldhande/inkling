@@ -22,6 +22,7 @@ from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import deliveries as deliveries_q
 from inkling.db.queries import docs as docs_q
 from inkling.db.queries import events as events_q
+from inkling.db.queries import facts as facts_q
 from inkling.db.queries import wakeups as wakeups_q
 from inkling.turns.commands import (
     AppendEvent,
@@ -31,8 +32,10 @@ from inkling.turns.commands import (
     Notify,
     ScheduleWakeup,
     SnoozeCommitment,
+    UpdateDoc,
     UpdateWorkingState,
     UpsertCommitment,
+    UpsertMemoryFact,
 )
 
 log = logging.getLogger(__name__)
@@ -204,6 +207,34 @@ async def _apply_update_working_state(
     return {"doc_id": int(row["id"]), "version": int(row["version"])}
 
 
+async def _apply_update_doc(
+    conn: AsyncConnection, cmd: UpdateDoc, *, user_id: str, turn_id: int
+) -> dict[str, Any]:
+    """§13.1: patterns/digest7 version, consolidation-only (validate gates)."""
+    row = await docs_q.insert_next_version(
+        conn,
+        user_id=user_id,
+        kind=cmd.kind,
+        content=cmd.new_content,
+        written_by=_authorship(turn_id),
+    )
+    return {"doc_id": int(row["id"]), "kind": cmd.kind, "version": int(row["version"])}
+
+
+async def _apply_upsert_fact(
+    conn: AsyncConnection, cmd: UpsertMemoryFact, *, user_id: str, turn_id: int
+) -> dict[str, Any]:
+    return await facts_q.upsert(
+        conn,
+        user_id=user_id,
+        subject=cmd.subject,
+        predicate=cmd.predicate,
+        value=cmd.value,
+        condition=cmd.condition,
+        confidence=cmd.confidence,
+    )
+
+
 async def _apply_schedule_wakeup(
     conn: AsyncConnection, cmd: ScheduleWakeup, *, user_id: str, turn_id: int
 ) -> dict[str, Any]:
@@ -286,6 +317,10 @@ async def apply_command(
         return await _apply_schedule_wakeup(conn, cmd, user_id=user_id, turn_id=turn_id)
     if isinstance(cmd, CancelWakeup):
         return await _apply_cancel_wakeup(conn, cmd, user_id=user_id, turn_id=turn_id)
+    if isinstance(cmd, UpdateDoc):
+        return await _apply_update_doc(conn, cmd, user_id=user_id, turn_id=turn_id)
+    if isinstance(cmd, UpsertMemoryFact):
+        return await _apply_upsert_fact(conn, cmd, user_id=user_id, turn_id=turn_id)
     if isinstance(cmd, Notify):
         return await _apply_notify(
             conn,

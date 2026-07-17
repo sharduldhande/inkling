@@ -55,13 +55,20 @@ RECONCILE_SECONDS = 60  # standalone role: refresh is the invalidation channel
 LATE_AFTER = timedelta(minutes=5)
 MIN_SLEEP = 0.05
 
+# §13.1: nightly consolidation per user at their local 02:30. There is no DB
+# row behind a job entry — the trigger's per-local-date idempotency key is the
+# CAS. A boot inside the catch-up window still runs the night's pass (late);
+# past that, the night is skipped rather than consolidated at dinnertime.
+CONSOLIDATION_LOCAL_TIME = time(2, 30)
+JOB_CATCHUP = timedelta(hours=6)
+
 
 @dataclass(order=True)
 class Entry:
     fire_at: datetime
-    kind: str  # "occurrence" | "wakeup"
+    kind: str  # "occurrence" | "wakeup" | "job"
     user_id: str
-    ref_id: int
+    ref_id: int  # 0 for jobs: nothing in the DB to point at
     # Everything a fire needs beyond the key, loaded at refresh. db_fire_at is
     # the row's own time — it diverges from fire_at when quiet hours defer an
     # entry, and CAS guards and idempotency keys must use the row's value.
@@ -214,12 +221,42 @@ class Scheduler:
                                 "respect_quiet": wk["respect_quiet"],
                             },
                         ))
+                    job_at = self._next_consolidation(now, tz)
+                    if job_at is not None:
+                        heap.append(Entry(
+                            fire_at=job_at,
+                            kind="job",
+                            user_id=user_id,
+                            ref_id=0,
+                            extra={
+                                "job": "consolidate",
+                                "local_date": job_at.astimezone(tz).date().isoformat(),
+                            },
+                        ))
             except Exception:
                 log.exception("refresh failed for user %s; their entries retry next pass", user_id)
         heapq.heapify(heap)
         self._heap = heap
         self._next_refresh = now + timedelta(seconds=self.refresh_seconds)
         log.info("scheduler refreshed: %d entr(ies) in heap", len(heap))
+
+    def _next_consolidation(self, now: datetime, tz: ZoneInfo) -> datetime | None:
+        """Today's 02:30 local while it's due or within catch-up, else tomorrow's.
+
+        Re-proposing an already-fired instance is harmless: the per-local-date
+        idempotency key makes the trigger insert a no-op.
+        """
+        local = now.astimezone(tz)
+        candidate = local.replace(
+            hour=CONSOLIDATION_LOCAL_TIME.hour,
+            minute=CONSOLIDATION_LOCAL_TIME.minute,
+            second=0, microsecond=0,
+        )
+        if candidate > local:
+            return candidate
+        if local - candidate <= JOB_CATCHUP:
+            return candidate
+        return candidate + timedelta(days=1)
 
     async def _materialize_wakeup(
         self, conn: Any, wakeup: dict[str, Any], now: datetime
@@ -256,6 +293,8 @@ class Scheduler:
             try:
                 if entry.kind == "wakeup":
                     ok = await self._fire_wakeup(entry, now)
+                elif entry.kind == "job":
+                    ok = await self._fire_job(entry, now)
                 else:
                     ok = await self._fire_occurrence(entry, now)
             except Exception:
@@ -275,8 +314,12 @@ class Scheduler:
 
         Wakeups defer per their respect_quiet flag; occurrences per notify
         policy ("defer" and, for now, "silent_summary" — see module docstring).
+        Jobs never defer: consolidation at 02:30 is silent maintenance — quiet
+        hours exist to protect sleep from pushes, not the DB from writes.
         Landing exactly at quiet_end can't re-defer: the window is [start, end).
         """
+        if entry.kind == "job":
+            return None
         if entry.kind == "wakeup" and not entry.extra["respect_quiet"]:
             return None
         if entry.kind == "occurrence" and entry.extra["quiet_policy"] not in (
@@ -337,6 +380,29 @@ class Scheduler:
                 priority=PRIORITY_BY_SOURCE["wakeup"],
             )
         return True
+
+    async def _fire_job(self, entry: Entry, now: datetime) -> bool:
+        """Insert the consolidation trigger; its idempotency key is the CAS.
+
+        False (key already present) means this local date's pass already ran
+        or is queued — the normal outcome for every refresh after the first.
+        """
+        local_date = entry.extra["local_date"]
+        async with self.db.with_tenant(entry.user_id) as conn:
+            row = await triggers_q.insert(
+                conn,
+                user_id=entry.user_id,
+                source="job",
+                source_ref=f"consolidate:{local_date}",
+                idempotency_key=f"consolidate:{local_date}",
+                payload=json.dumps({
+                    "job": "consolidate",
+                    "text": f"Scheduled nightly consolidation for {local_date}.",
+                    "late": self._late(entry, now),
+                }),
+                priority=PRIORITY_BY_SOURCE["job"],
+            )
+        return row is not None
 
     async def _fire_occurrence(self, entry: Entry, now: datetime) -> bool:
         """pending→eligible and the surfacing trigger, atomically (§10).

@@ -20,6 +20,10 @@ from inkling.db.client import Database
 from inkling.db.queries import triggers as triggers_q
 from inkling.db.queries import turns as turns_q
 from inkling.inference.gateway import InferenceGateway, emit_commands_tool
+from inkling.jobs.consolidate import (
+    assemble_consolidation_context,
+    is_consolidation_trigger,
+)
 from inkling.turns.commands import (
     CancelWakeup,
     Notify,
@@ -259,10 +263,19 @@ class Worker:
             heart.cancel()
 
     async def _assemble_context(self, trigger: dict[str, Any]) -> tuple[str, str]:
-        """§8 assembly: one snapshot transaction, closed before inference (§5.3)."""
-        assembled = await assemble_context(
-            self.db, user_id=self.user_id, trigger=trigger
-        )
+        """One snapshot transaction, closed before inference (§5.3).
+
+        Consolidation triggers (§13.1) get their own prompt and day-scoped
+        context; everything else gets the §8 assembly.
+        """
+        if is_consolidation_trigger(trigger):
+            assembled = await assemble_consolidation_context(
+                self.db, user_id=self.user_id, trigger=trigger
+            )
+        else:
+            assembled = await assemble_context(
+                self.db, user_id=self.user_id, trigger=trigger
+            )
         return assembled.system, assembled.context
 
     async def _heartbeat(self, turn_id: int, lease_lost: asyncio.Event) -> None:

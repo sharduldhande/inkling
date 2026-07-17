@@ -29,8 +29,22 @@ LIMIT %s
 """
 
 
+_SINCE = """
+SELECT id, turn_id, ts, role, text
+FROM transcript
+WHERE ts >= %s
+ORDER BY ts, id
+LIMIT %s
+"""
+
+
 async def tail(conn: AsyncConnection, limit: int) -> list[dict[str, Any]]:
     cur = await conn.execute(_TAIL, (limit,))
+    return await cur.fetchall()
+
+
+async def since(conn: AsyncConnection, *, start: Any, limit: int) -> list[dict[str, Any]]:
+    cur = await conn.execute(_SINCE, (start, limit))
     return await cur.fetchall()
 
 

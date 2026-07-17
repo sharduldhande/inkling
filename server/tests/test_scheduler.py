@@ -28,8 +28,9 @@ NY = ZoneInfo("America/New_York")
 
 # 14:00 EDT — outside the seeded default quiet window (03:00–11:59 local).
 T = datetime(2026, 7, 17, 18, 0, tzinfo=UTC)
-# 08:00 EDT — inside it.
-T_QUIET = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+# 09:00 EDT — inside it, and (unlike earlier hours) past the consolidation
+# job's 6h catch-up window, so fire counts here are wakeups/occurrences only.
+T_QUIET = datetime(2026, 7, 17, 13, 0, tzinfo=UTC)
 # 11:59 EDT — the window's end, exclusive, so fires resume here.
 T_QUIET_END = datetime(2026, 7, 17, 15, 59, tzinfo=UTC)
 

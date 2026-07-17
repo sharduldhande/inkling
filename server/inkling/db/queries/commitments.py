@@ -149,6 +149,8 @@ WHERE status = 'open' AND (due_at IS NOT NULL OR recurrence IS NOT NULL)
 ORDER BY id
 """
 
+_OPEN_ALL = "SELECT * FROM commitments WHERE status = 'open' ORDER BY id"
+
 
 async def get(conn: AsyncConnection, commitment_id: int) -> dict[str, Any] | None:
     """RLS scopes this to the tenant: another user's id simply returns None."""
@@ -283,6 +285,11 @@ async def skip_unsurfaced_occurrences(
 
 async def open_scheduled(conn: AsyncConnection) -> list[dict[str, Any]]:
     cur = await conn.execute(_OPEN_SCHEDULED)
+    return await cur.fetchall()
+
+
+async def open_all(conn: AsyncConnection) -> list[dict[str, Any]]:
+    cur = await conn.execute(_OPEN_ALL)
     return await cur.fetchall()
 
 

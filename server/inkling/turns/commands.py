@@ -107,6 +107,30 @@ class Notify(BaseModel):  # rare: extra push beyond the reply
     body: str
 
 
+# --- consolidation-only commands (§13.1) ------------------------------------
+# §9.1's union deliberately has no doc command beyond working_state and no
+# memory_facts writes; §13.1 requires both, "validated like any turn". These
+# exist in the schema so they flow through the same parse→validate→apply
+# pipeline, and validate.py rejects them for any turn that is not the
+# consolidation job. goals stays command-less: only a human edits goals.
+
+
+class UpdateDoc(BaseModel):
+    type: Literal["UpdateDoc"]
+    kind: Literal["patterns", "digest7"]
+    new_content: str
+    reason: str
+
+
+class UpsertMemoryFact(BaseModel):
+    type: Literal["UpsertMemoryFact"]
+    subject: str
+    predicate: str
+    value: str
+    condition: str | None = None
+    confidence: float = 0.5
+
+
 Command = Annotated[
     AppendEvent
     | UpsertCommitment
@@ -116,7 +140,9 @@ Command = Annotated[
     | ScheduleWakeup
     | CancelWakeup
     | CreateCalendarEvent
-    | Notify,
+    | Notify
+    | UpdateDoc
+    | UpsertMemoryFact,
     Field(discriminator="type"),
 ]
 

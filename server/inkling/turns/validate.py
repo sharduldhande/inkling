@@ -42,13 +42,17 @@ from inkling.turns.commands import (
     Notify,
     ScheduleWakeup,
     SnoozeCommitment,
+    UpdateDoc,
     UpdateWorkingState,
+    UpsertMemoryFact,
 )
 
 log = logging.getLogger(__name__)
 
-# §8.1: working_state is a 1200-token hard cap.
+# §8.1: working_state is a 1200-token hard cap; patterns and digest7 are
+# capped at their context budgets so an accepted doc always fits its section.
 WORKING_STATE_TOKEN_CAP = 1200
+DOC_TOKEN_CAPS = {"patterns": 600, "digest7": 500}
 
 # §9.2: a rewrite that replaces more than this much of the doc is a red flag —
 # the model is discarding state rather than editing it. Consolidation is the
@@ -290,13 +294,44 @@ async def _validate_notify(conn: AsyncConnection, cmd: Notify) -> str | None:
     return None
 
 
+async def _validate_update_doc(
+    conn: AsyncConnection, cmd: UpdateDoc, *, consolidation: bool
+) -> str | None:
+    if not consolidation:
+        return f"only the consolidation job may rewrite {cmd.kind}"
+    if not cmd.reason.strip():
+        return "reason is required"
+    tokens = estimate_tokens(cmd.new_content)
+    cap = DOC_TOKEN_CAPS[cmd.kind]
+    if tokens > cap:
+        return f"{cmd.kind} would be ~{tokens} tokens, over its {cap} cap"
+    return None
+
+
+async def _validate_upsert_fact(
+    conn: AsyncConnection, cmd: UpsertMemoryFact, *, consolidation: bool
+) -> str | None:
+    if not consolidation:
+        return "only the consolidation job may write memory_facts"
+    if not (cmd.subject.strip() and cmd.predicate.strip() and cmd.value.strip()):
+        return "subject, predicate, and value are all required"
+    if not 0.0 <= cmd.confidence <= 1.0:
+        return f"confidence {cmd.confidence} is not in [0, 1]"
+    return None
+
+
 async def validate_commands(
-    conn: AsyncConnection, *, user: dict[str, Any], commands: list[Command]
+    conn: AsyncConnection,
+    *,
+    user: dict[str, Any],
+    commands: list[Command],
+    consolidation: bool = False,
 ) -> Validated:
     """Split the model's commands into what may be applied and what may not.
 
     `conn` must already be inside the tenant transaction that will apply the
-    accepted commands.
+    accepted commands. `consolidation` is true only for the §13.1 job's turns;
+    it unlocks the job-only commands (UpdateDoc, UpsertMemoryFact).
     """
     accepted: list[Command] = []
     rejected: list[Rejection] = []
@@ -318,6 +353,14 @@ async def validate_commands(
             reason = await _validate_calendar(conn, cmd, user=user)
         elif isinstance(cmd, Notify):
             reason = await _validate_notify(conn, cmd)
+        elif isinstance(cmd, UpdateDoc):
+            reason = await _validate_update_doc(
+                conn, cmd, consolidation=consolidation
+            )
+        elif isinstance(cmd, UpsertMemoryFact):
+            reason = await _validate_upsert_fact(
+                conn, cmd, consolidation=consolidation
+            )
         else:  # UpsertCommitment
             reason = await _validate_upsert(conn, cmd)
 
