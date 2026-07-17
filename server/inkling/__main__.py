@@ -2,7 +2,7 @@
 
 Roles api/worker/scheduler/delivery/calendar/jobs must each be independently
 runnable (§1); `all` runs everything in one asyncio process. api/worker/
-scheduler/all are wired; delivery/calendar/jobs land with their milestones.
+scheduler/delivery/all are wired; calendar/jobs land with their milestones.
 """
 
 import argparse
@@ -60,7 +60,7 @@ def main() -> int:
         print(f"seeded user {args.user!r}")
         return 0
 
-    if args.role in ("api", "worker", "scheduler", "all"):
+    if args.role in ("api", "worker", "scheduler", "delivery", "all"):
         import asyncio
 
         return asyncio.run(_serve(config, args.role))
@@ -76,14 +76,18 @@ async def _serve(config: Config, role: str) -> int:
     - worker: turns only; no HTTP socket.
     - scheduler: timers only; refreshes every 60 s (the §10 reconcile scan —
       no in-process invalidation event reaches a separate process).
-    - all: everything in one asyncio process — the initial systemd shape; the
-      scheduler nudges workers and workers poke the scheduler in-process.
+    - delivery: outbox drainer only (§11); its 60 s reconcile plays the same
+      role as the scheduler's.
+    - all: everything in one asyncio process — the initial systemd shape;
+      scheduler/drainer nudge workers and workers poke them back in-process.
     """
     import asyncio
 
     from inkling.api.auth import load_roster
     from inkling.api.broker import Broker
     from inkling.db.client import Database
+    from inkling.delivery.ntfy import NtfyClient
+    from inkling.delivery.outbox import Drainer
     from inkling.inference.profile import ProfileRoutingGateway
     from inkling.scheduler.scheduler import (
         RECONCILE_SECONDS,
@@ -97,6 +101,9 @@ async def _serve(config: Config, role: str) -> int:
     await db.open()
     scheduler_task = None
     scheduler = None
+    drainer_task = None
+    drainer = None
+    ntfy = None
     try:
         broker = Broker()
         supervisor = None
@@ -116,19 +123,40 @@ async def _serve(config: Config, role: str) -> int:
                 ),
                 nudge=supervisor.nudge if supervisor else None,
             )
-            if supervisor is not None:
-                # Wire after both exist: worker commits poke the scheduler.
-                for worker in supervisor.workers.values():
-                    worker.on_schedule_change = scheduler.wake
             scheduler_task = asyncio.create_task(
                 scheduler.run_forever(), name="scheduler"
             )
+        if role in ("delivery", "all"):
+            ntfy = NtfyClient(config.ntfy_base)
+            drainer = Drainer(
+                db,
+                roster.user_ids,
+                channel=ntfy,
+                operator_topic=config.operator_ntfy,
+            )
+            drainer_task = asyncio.create_task(
+                drainer.run_forever(), name="delivery"
+            )
+        if supervisor is not None:
+            # Wire after everything exists: worker commits poke the timers.
+            for worker in supervisor.workers.values():
+                if scheduler is not None:
+                    worker.on_schedule_change = scheduler.wake
+                if drainer is not None:
+                    worker.on_delivery_queued = drainer.wake
 
         if role == "scheduler":
             try:
                 await scheduler_task
             finally:
                 scheduler.stop()
+            return 0
+
+        if role == "delivery":
+            try:
+                await drainer_task
+            finally:
+                drainer.stop()
             return 0
 
         if role == "worker":
@@ -155,11 +183,14 @@ async def _serve(config: Config, role: str) -> int:
         await server.serve()  # lifespan starts/stops the supervisor
         return 0
     finally:
-        if scheduler is not None:
-            scheduler.stop()
-        if scheduler_task is not None:
-            scheduler_task.cancel()
-            await asyncio.gather(scheduler_task, return_exceptions=True)
+        for service, task in ((scheduler, scheduler_task), (drainer, drainer_task)):
+            if service is not None:
+                service.stop()
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        if ntfy is not None:
+            await ntfy.close()
         await db.close()
 
 

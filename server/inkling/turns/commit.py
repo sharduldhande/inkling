@@ -146,6 +146,11 @@ async def commit_turn(
             next_seq += 1
 
         payload = trigger["payload"] or {}
+        if trigger["source"] == "chat":
+            # §11 acknowledgement heuristic: the user talking to us at all
+            # acknowledges whatever reminders have surfaced. The v1 app has no
+            # ack channel, so this chat turn is the only signal there is.
+            await commitments_q.acknowledge_surfaced(conn)
         if trigger["source"] == "chat" and payload.get("text"):
             await _transcript(
                 conn,

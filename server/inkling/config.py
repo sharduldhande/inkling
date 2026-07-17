@@ -11,6 +11,7 @@ class Config(BaseSettings):
     bind: str = "127.0.0.1"
     chat_tokens_file: str = ""
     ntfy_base: str = "https://ntfy.sh"
+    operator_ntfy: str = ""  # §11 dead-letter alerts; empty disables them
 
     backup_s3_endpoint: str = ""
     backup_s3_bucket: str = ""

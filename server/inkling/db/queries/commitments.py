@@ -130,6 +130,17 @@ WHERE commitment_id = %s AND status IN ('pending', 'eligible')
 RETURNING id
 """
 
+# §11 acknowledgement heuristic: any chat turn after a reminder surfaced marks
+# that user's un-acknowledged surfaced occurrences acknowledged. Deliberately
+# coarse — the v1 app has no ack channel, and the user talking to us at all is
+# the signal escalation cares about.
+_ACKNOWLEDGE_SURFACED = """
+UPDATE commitment_occurrences
+SET acknowledged_at = now()
+WHERE status = 'surfaced' AND acknowledged_at IS NULL
+RETURNING id
+"""
+
 # §10 materialization: every open commitment that can fire (dated or
 # recurring); recurrence expansion happens in Python (dateutil).
 _OPEN_SCHEDULED = """
@@ -273,3 +284,8 @@ async def skip_unsurfaced_occurrences(
 async def open_scheduled(conn: AsyncConnection) -> list[dict[str, Any]]:
     cur = await conn.execute(_OPEN_SCHEDULED)
     return await cur.fetchall()
+
+
+async def acknowledge_surfaced(conn: AsyncConnection) -> int:
+    cur = await conn.execute(_ACKNOWLEDGE_SURFACED)
+    return len(await cur.fetchall())

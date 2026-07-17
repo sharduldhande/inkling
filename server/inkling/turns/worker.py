@@ -22,6 +22,7 @@ from inkling.db.queries import turns as turns_q
 from inkling.inference.gateway import InferenceGateway, emit_commands_tool
 from inkling.turns.commands import (
     CancelWakeup,
+    Notify,
     ScheduleWakeup,
     SnoozeCommitment,
     UpsertCommitment,
@@ -68,6 +69,7 @@ class Worker:
         idle_poll_seconds: float = IDLE_POLL_SECONDS,
         subscriber: Subscriber | None = None,
         on_schedule_change: Callable[[], None] | None = None,
+        on_delivery_queued: Callable[[], None] | None = None,
     ):
         self.db = db
         self.user_id = user_id
@@ -78,6 +80,7 @@ class Worker:
         self.idle_poll_seconds = idle_poll_seconds
         self.subscriber = subscriber
         self.on_schedule_change = on_schedule_change
+        self.on_delivery_queued = on_delivery_queued
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
 
@@ -242,6 +245,13 @@ class Worker:
                 isinstance(c, SCHEDULE_CHANGING) for c in result.commands
             ):
                 self.on_schedule_change()
+
+            # §11: a Notify just became a deliveries row; wake the drainer so
+            # the push leaves now, not at the next reconcile scan.
+            if self.on_delivery_queued is not None and any(
+                isinstance(c, Notify) for c in result.commands
+            ):
+                self.on_delivery_queued()
         except Exception as exc:
             log.exception("turn %s failed for user %s", turn_id, self.user_id)
             await self._fail_turn(trigger, turn_id, seq + 1, exc)
