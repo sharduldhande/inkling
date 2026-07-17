@@ -18,7 +18,7 @@ from psycopg import AsyncConnection
 from inkling.db.client import Database
 from inkling.db.queries import triggers as triggers_q
 from inkling.db.queries import turns as turns_q
-from inkling.inference.gateway import Completed
+from inkling.inference.gateway import TurnResult
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ async def commit_turn(
     user_id: str,
     trigger: dict[str, Any],
     turn_id: int,
-    result: Completed,
+    result: TurnResult,
     next_seq: int,
     actor: str,
 ) -> None:
@@ -61,11 +61,13 @@ async def commit_turn(
     `next_seq` continues the turn_events numbering the streaming loop left off
     at, so Last-Event-ID resume sees one contiguous sequence (§5.5).
 
-    Command application is not wired yet: §9 defines the Pydantic command
-    schema and the validation layer, and until it exists every command is
-    recorded to audit_log and applied to nothing. No real gateway emits
-    commands yet, so nothing is silently dropped today — but §9 must land
-    before any adapter that can.
+    Command APPLICATION is not wired yet: commands are §9.1-validated Pydantic
+    objects by the time they arrive here, but the §9.2 validation layer and the
+    per-command mutations don't exist, so every command is recorded to
+    audit_log and applied to nothing. Real adapters now exist and can emit
+    commands — §9.2 must land before this runs against a real user, or the
+    model's claims and reality will diverge (exactly what D4 exists to
+    prevent).
     """
     async with db.with_tenant(user_id) as conn:
         for command in result.commands:
@@ -74,12 +76,12 @@ async def commit_turn(
                 user_id=user_id,
                 actor=actor,
                 action="command_not_implemented",
-                detail={"command": command, "turn_id": turn_id},
+                detail={"command": command.model_dump(mode="json"), "turn_id": turn_id},
             )
         if result.commands:
             log.warning(
-                "turn %s emitted %d command(s) with §9 unimplemented; recorded to "
-                "audit_log and applied to nothing",
+                "turn %s emitted %d command(s) with §9.2 unimplemented; recorded "
+                "to audit_log and applied to NOTHING",
                 turn_id,
                 len(result.commands),
             )

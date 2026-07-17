@@ -61,25 +61,68 @@ def main() -> int:
         return 0
 
     if args.role in ("api", "worker", "all"):
-        return _serve(config, args.role)
+        import asyncio
+
+        return asyncio.run(_serve(config, args.role))
 
     print(f"role {args.role!r} is not implemented yet", file=sys.stderr)
     return 1
 
 
-def _serve(config: Config, role: str) -> int:
-    """Run the API, the workers, or both in one asyncio process.
+async def _serve(config: Config, role: str) -> int:
+    """Run the API, the workers, or both in one asyncio process (§1).
 
-    The real inference gateway lands with §7; until then every role that turns
-    triggers refuses to start rather than quietly answering with a stub.
+    - api: HTTP only; triggers are recorded, another process turns them.
+    - worker: turns only; no HTTP socket.
+    - all: both in one process — the initial systemd shape.
     """
-    print(
-        f"role {role!r} needs the §7 inference gateway, which is not built yet.\n"
-        "The turn pipeline and API are testable via the test suite "
-        "(StubGateway); wiring a real adapter is the next milestone.",
-        file=sys.stderr,
-    )
-    return 1
+    import asyncio
+
+    from inkling.api.auth import load_roster
+    from inkling.api.broker import Broker
+    from inkling.db.client import Database
+    from inkling.inference.profile import ProfileRoutingGateway
+    from inkling.turns.supervisor import Supervisor
+
+    roster = load_roster(config.chat_tokens_file)
+    db = Database(config.database_url)
+    await db.open()
+    try:
+        broker = Broker()
+        supervisor = None
+        if role in ("worker", "all"):
+            supervisor = Supervisor(
+                db,
+                roster.user_ids,
+                ProfileRoutingGateway(db),
+                subscriber=broker.publish,
+            )
+
+        if role == "worker":
+            await supervisor.start()
+            try:
+                await asyncio.Event().wait()  # until SIGINT/SIGTERM
+            finally:
+                await supervisor.stop()
+            return 0
+
+        import uvicorn
+
+        from inkling.api.server import create_app
+
+        app = create_app(db, roster, broker=broker, supervisor=supervisor)
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=config.bind,
+                port=config.port,
+                log_level=config.log_level,
+            )
+        )
+        await server.serve()  # lifespan starts/stops the supervisor
+        return 0
+    finally:
+        await db.close()
 
 
 if __name__ == "__main__":

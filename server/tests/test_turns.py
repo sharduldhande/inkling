@@ -303,8 +303,11 @@ async def test_tick_runs_a_turn_end_to_end(db: Database):
     triggers = await _rows(db, USER_A, "SELECT status FROM triggers WHERE id = %s", (sub.trigger_id,))
     assert triggers[0]["status"] == "done"
 
-    # The gateway saw the user's text as the prompt.
-    assert gateway.calls[0]["prompt"] == "how are you"
+    # The gateway saw the user's text in the context, a system prompt, and
+    # exactly the one command-emission tool (§7).
+    assert "how are you" in gateway.calls[0]["context"]
+    assert gateway.calls[0]["system"]
+    assert [t.name for t in gateway.calls[0]["tools"]] == ["emit_commands"]
 
 
 async def test_turn_events_carry_v1_stream_shape(db: Database):
@@ -341,9 +344,12 @@ async def test_non_chat_turn_records_no_user_transcript(db: Database):
     assert [r["role"] for r in rows] == ["assistant"]
 
 
-async def test_commands_are_audited_not_applied_until_section_9(db: Database):
+async def test_commands_are_audited_not_applied_until_9_2(db: Database):
+    from inkling.turns.commands import AppendEvent
+
     await ingress.submit(db, user_id=USER_A, source="chat", payload={"text": "hi"})
-    gateway = StubGateway("ok", commands=[{"type": "add_habit", "name": "walk"}])
+    command = AppendEvent(type="AppendEvent", kind="note", note="user walked")
+    gateway = StubGateway("ok", commands=[command])
 
     await Worker(db, USER_A, gateway).tick()
 
@@ -351,7 +357,8 @@ async def test_commands_are_audited_not_applied_until_section_9(db: Database):
         cur = await conn.execute("SELECT action, detail FROM audit_log")
         audits = await cur.fetchall()
     assert [a["action"] for a in audits] == ["command_not_implemented"]
-    assert audits[0]["detail"]["command"] == {"type": "add_habit", "name": "walk"}
+    assert audits[0]["detail"]["command"]["type"] == "AppendEvent"
+    assert audits[0]["detail"]["command"]["note"] == "user walked"
 
 
 async def test_subscriber_sees_the_whole_stream_live(db: Database):
@@ -416,9 +423,8 @@ async def test_a_broken_subscriber_does_not_fail_the_turn(db: Database):
 
 
 class ExplodingGateway:
-    async def stream(self, *, user_id, prompt, context):
+    async def run_turn(self, *, user_id, system, context, tools, on_text_delta):
         raise RuntimeError("provider exploded")
-        yield  # pragma: no cover — makes this an async generator
 
 
 async def test_gateway_failure_errors_the_turn_and_streams_the_error(db: Database):
