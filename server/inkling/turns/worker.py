@@ -21,6 +21,7 @@ from inkling.db.queries import triggers as triggers_q
 from inkling.db.queries import turns as turns_q
 from inkling.inference.gateway import Completed, InferenceGateway, TextDelta
 from inkling.turns.commit import commit_turn
+from inkling.turns.stream import StreamEvent
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ IDLE_POLL_SECONDS = 1.0
 
 # Subscriber for live SSE relay (§5.5). turn_events is the durable record; this
 # is the best-effort live path, so a slow or dead socket must never stall a turn.
-Subscriber = Callable[[int, int, str, dict[str, Any]], Awaitable[None]]
+Subscriber = Callable[[StreamEvent], Awaitable[None]]
 
 
 def new_worker_id() -> str:
@@ -64,9 +65,21 @@ class Worker:
         self.idle_poll_seconds = idle_poll_seconds
         self.subscriber = subscriber
         self._stop = asyncio.Event()
+        self._wake = asyncio.Event()
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
+
+    def nudge(self) -> None:
+        """Wake the loop now instead of at the next poll.
+
+        Ingress calls this in-process (role=all) so a chat turn starts on
+        arrival rather than up to idle_poll_seconds later. It is an
+        optimisation only — the poll is what makes the worker correct, and a
+        worker in another process simply never gets nudged.
+        """
+        self._wake.set()
 
     async def run_forever(self) -> None:
         while not self._stop.is_set():
@@ -77,12 +90,15 @@ class Worker:
                 # A turn must never kill the loop: the next tick reaps and retries.
                 log.exception("worker %s tick failed for user %s", self.id, self.user_id)
             if not worked:
-                try:
-                    await asyncio.wait_for(
-                        self._stop.wait(), timeout=self.idle_poll_seconds
-                    )
-                except TimeoutError:
-                    pass
+                await self._idle()
+
+    async def _idle(self) -> None:
+        try:
+            await asyncio.wait_for(self._wake.wait(), timeout=self.idle_poll_seconds)
+        except TimeoutError:
+            pass
+        finally:
+            self._wake.clear()
 
     async def tick(self) -> bool:
         """Reap, then run at most one turn. True if a turn ran."""
@@ -145,6 +161,7 @@ class Worker:
             return trigger, turn
 
     async def run_turn(self, trigger: dict[str, Any], turn_id: int) -> None:
+        trigger_id = int(trigger["id"])
         lease_lost = asyncio.Event()
         heart = asyncio.create_task(self._heartbeat(turn_id, lease_lost))
         seq = 0
@@ -160,7 +177,9 @@ class Worker:
                     raise LeaseLost(f"lease on turn {turn_id} expired mid-stream")
                 if isinstance(chunk, TextDelta):
                     seq += 1
-                    await self._emit(turn_id, seq, "text_delta", {"text": chunk.text})
+                    await self._emit(
+                        trigger_id, turn_id, seq, "text_delta", {"text": chunk.text}
+                    )
                 else:
                     completed = chunk
 
@@ -176,6 +195,10 @@ class Worker:
                 next_seq=seq + 1,
                 actor=self.id,
             )
+            # commit_turn persisted these two; republish so live sockets see the
+            # end of the stream without waiting to poll turn_events.
+            await self._publish(trigger_id, turn_id, seq + 1, "done", {"done": True})
+            await self._publish(trigger_id, turn_id, seq + 2, "exit", {"exit": 0})
         except Exception as exc:
             log.exception("turn %s failed for user %s", turn_id, self.user_id)
             await self._fail_turn(trigger, turn_id, seq + 1, exc)
@@ -204,7 +227,7 @@ class Worker:
                 return
 
     async def _emit(
-        self, turn_id: int, seq: int, kind: str, data: dict[str, Any]
+        self, trigger_id: int, turn_id: int, seq: int, kind: str, data: dict[str, Any]
     ) -> None:
         """Persist a stream event, then relay it to any live socket (§5.5).
 
@@ -224,11 +247,26 @@ class Worker:
                 kind=kind,
                 data=data,
             )
-        if self.subscriber is not None:
-            try:
-                await self.subscriber(turn_id, seq, kind, data)
-            except Exception:
-                log.exception("subscriber raised on turn %s seq %s", turn_id, seq)
+        await self._publish(trigger_id, turn_id, seq, kind, data)
+
+    async def _publish(
+        self, trigger_id: int, turn_id: int, seq: int, kind: str, data: dict[str, Any]
+    ) -> None:
+        if self.subscriber is None:
+            return
+        try:
+            await self.subscriber(
+                StreamEvent(
+                    user_id=self.user_id,
+                    trigger_id=trigger_id,
+                    turn_id=turn_id,
+                    seq=seq,
+                    kind=kind,
+                    data=data,
+                )
+            )
+        except Exception:
+            log.exception("subscriber raised on turn %s seq %s", turn_id, seq)
 
     async def _fail_turn(
         self, trigger: dict[str, Any], turn_id: int, seq: int, exc: Exception
@@ -247,6 +285,11 @@ class Worker:
             await self._settle_failed(
                 conn, trigger_id=int(trigger["id"]), source=trigger["source"]
             )
+        # Published after the transaction commits: a live socket must never be
+        # told the turn failed while the rollback is still possible.
+        await self._publish(
+            int(trigger["id"]), turn_id, seq, "error", {"error": error}
+        )
 
     async def _settle_failed(
         self, conn: Any, *, trigger_id: int, source: str

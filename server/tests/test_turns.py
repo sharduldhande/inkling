@@ -354,22 +354,56 @@ async def test_commands_are_audited_not_applied_until_section_9(db: Database):
     assert audits[0]["detail"]["command"] == {"type": "add_habit", "name": "walk"}
 
 
-async def test_subscriber_sees_deltas_live(db: Database):
+async def test_subscriber_sees_the_whole_stream_live(db: Database):
+    """Deltas *and* the terminal frames: a live socket must see the end of the
+    turn without waiting to poll turn_events."""
     await ingress.submit(db, user_id=USER_A, source="chat", payload={"text": "hi"})
     seen: list[tuple[int, str, dict]] = []
 
-    async def subscriber(turn_id, seq, kind, data):
-        seen.append((seq, kind, data))
+    async def subscriber(event):
+        seen.append((event.seq, event.kind, event.data))
 
     await Worker(db, USER_A, StubGateway("xy", chunk_size=1), subscriber=subscriber).tick()
 
-    assert seen == [(1, "text_delta", {"text": "x"}), (2, "text_delta", {"text": "y"})]
+    assert seen == [
+        (1, "text_delta", {"text": "x"}),
+        (2, "text_delta", {"text": "y"}),
+        (3, "done", {"done": True}),
+        (4, "exit", {"exit": 0}),
+    ]
+
+
+async def test_published_events_carry_their_trigger(db: Database):
+    """/chat matches events to its own trigger without racing triggers.turn_id."""
+    sub = await ingress.submit(db, user_id=USER_A, source="chat", payload={"text": "hi"})
+    seen = []
+
+    async def subscriber(event):
+        seen.append(event)
+
+    await Worker(db, USER_A, StubGateway("x"), subscriber=subscriber).tick()
+
+    assert {e.trigger_id for e in seen} == {sub.trigger_id}
+    assert {e.user_id for e in seen} == {USER_A}
+
+
+async def test_failure_is_published_live(db: Database):
+    await ingress.submit(db, user_id=USER_A, source="chat", payload={"text": "hi"})
+    seen = []
+
+    async def subscriber(event):
+        seen.append(event)
+
+    await Worker(db, USER_A, ExplodingGateway(), subscriber=subscriber).tick()
+
+    assert [e.kind for e in seen] == ["error"]
+    assert "provider exploded" in seen[0].data["error"]
 
 
 async def test_a_broken_subscriber_does_not_fail_the_turn(db: Database):
     await ingress.submit(db, user_id=USER_A, source="chat", payload={"text": "hi"})
 
-    async def subscriber(turn_id, seq, kind, data):
+    async def subscriber(event):
         raise RuntimeError("socket died")
 
     await Worker(db, USER_A, StubGateway("ok"), subscriber=subscriber).tick()

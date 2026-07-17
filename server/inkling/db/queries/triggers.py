@@ -133,6 +133,13 @@ async def requeue(conn: AsyncConnection, trigger_id: int) -> None:
     await conn.execute(_REQUEUE, (trigger_id,))
 
 
+async def turn_id_for(conn: AsyncConnection, trigger_id: int) -> int | None:
+    """The turn this trigger was claimed into, or None if still pending."""
+    cur = await conn.execute("SELECT turn_id FROM triggers WHERE id = %s", (trigger_id,))
+    row = await cur.fetchone()
+    return int(row["turn_id"]) if row and row["turn_id"] is not None else None
+
+
 async def pending_count(conn: AsyncConnection, user_id: str) -> int:
     cur = await conn.execute(
         "SELECT count(*) AS n FROM triggers WHERE user_id = %s AND status = 'pending'",

@@ -1,8 +1,8 @@
 """Entrypoint: `python -m inkling <role>`.
 
 Roles api/worker/scheduler/delivery/calendar/jobs must each be independently
-runnable (§1); `all` runs everything in one asyncio process. Only migrate and
-seed exist so far — service roles land with their milestones.
+runnable (§1); `all` runs everything in one asyncio process. api/worker/all are
+wired; scheduler/delivery/calendar/jobs land with their milestones.
 """
 
 import argparse
@@ -60,7 +60,25 @@ def main() -> int:
         print(f"seeded user {args.user!r}")
         return 0
 
+    if args.role in ("api", "worker", "all"):
+        return _serve(config, args.role)
+
     print(f"role {args.role!r} is not implemented yet", file=sys.stderr)
+    return 1
+
+
+def _serve(config: Config, role: str) -> int:
+    """Run the API, the workers, or both in one asyncio process.
+
+    The real inference gateway lands with §7; until then every role that turns
+    triggers refuses to start rather than quietly answering with a stub.
+    """
+    print(
+        f"role {role!r} needs the §7 inference gateway, which is not built yet.\n"
+        "The turn pipeline and API are testable via the test suite "
+        "(StubGateway); wiring a real adapter is the next milestone.",
+        file=sys.stderr,
+    )
     return 1
 
 

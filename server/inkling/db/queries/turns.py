@@ -42,6 +42,16 @@ WHERE user_id = %s AND status = 'running' AND lease_until >= now()
 LIMIT 1
 """
 
+# The /chat busy check (§5.1). Excludes the caller's own trigger: the worker
+# can claim a just-submitted trigger before the route gets to this check, and
+# a request must not be told "busy" because of the very turn it started.
+_RUNNING_FOR_OTHER_TRIGGER = """
+SELECT id FROM turns
+WHERE user_id = %s AND status = 'running' AND lease_until >= now()
+  AND trigger_id <> %s
+LIMIT 1
+"""
+
 # Attempts are counted from turns rows rather than a triggers.attempts column:
 # every claim creates exactly one turn, so COUNT(*) is the attempt number and
 # §4.2's DDL stays as written.
@@ -107,6 +117,14 @@ async def expired(conn: AsyncConnection) -> list[dict[str, Any]]:
 
 async def running_for_user(conn: AsyncConnection, user_id: str) -> int | None:
     cur = await conn.execute(_RUNNING_FOR_USER, (user_id,))
+    row = await cur.fetchone()
+    return int(row["id"]) if row else None
+
+
+async def running_for_other_trigger(
+    conn: AsyncConnection, user_id: str, trigger_id: int
+) -> int | None:
+    cur = await conn.execute(_RUNNING_FOR_OTHER_TRIGGER, (user_id, trigger_id))
     row = await cur.fetchone()
     return int(row["id"]) if row else None
 
