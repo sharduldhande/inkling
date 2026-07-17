@@ -9,6 +9,7 @@ rather than letting one user's bad turn silently stop their whole pipeline.
 
 import asyncio
 import logging
+from typing import Callable
 
 from inkling.db.client import Database
 from inkling.inference.gateway import InferenceGateway
@@ -28,13 +29,20 @@ class Supervisor:
         *,
         subscriber: Subscriber | None = None,
         restart_backoff: float = RESTART_BACKOFF_SECONDS,
+        on_schedule_change: Callable[[], None] | None = None,
     ):
         self.db = db
         self.gateway = gateway
         self.subscriber = subscriber
         self.restart_backoff = restart_backoff
         self.workers = {
-            user_id: Worker(db, user_id, gateway, subscriber=subscriber)
+            user_id: Worker(
+                db,
+                user_id,
+                gateway,
+                subscriber=subscriber,
+                on_schedule_change=on_schedule_change,
+            )
             for user_id in user_ids
         }
         self._tasks: dict[str, asyncio.Task[None]] = {}

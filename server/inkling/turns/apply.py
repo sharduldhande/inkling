@@ -139,6 +139,9 @@ async def _apply_complete_commitment(
     )
     if row is None:
         raise ConcurrentModification(f"commitment {cmd.id} changed mid-turn")
+    # A reminder for a thing already done is noise: retire any occurrence that
+    # hasn't surfaced yet (§4.6 skipped_done) so §10 never fires it.
+    skipped = await commitments_q.skip_unsurfaced_occurrences(conn, cmd.id)
     # The reason is the durable record of *why* this closed: the commitment row
     # only remembers that it did.
     await events_q.insert(
@@ -153,7 +156,11 @@ async def _apply_complete_commitment(
         source="agent",
         turn_id=turn_id,
     )
-    return {"commitment_id": cmd.id, "version": int(row["version"])}
+    return {
+        "commitment_id": cmd.id,
+        "version": int(row["version"]),
+        "occurrences_skipped": skipped,
+    }
 
 
 async def _apply_snooze_commitment(

@@ -20,11 +20,22 @@ from inkling.db.client import Database
 from inkling.db.queries import triggers as triggers_q
 from inkling.db.queries import turns as turns_q
 from inkling.inference.gateway import InferenceGateway, emit_commands_tool
+from inkling.turns.commands import (
+    CancelWakeup,
+    ScheduleWakeup,
+    SnoozeCommitment,
+    UpsertCommitment,
+)
 from inkling.turns.commit import commit_turn
 from inkling.turns.context import assemble_context
 from inkling.turns.stream import StreamEvent
 
 log = logging.getLogger(__name__)
+
+# Commands whose application creates or moves a future fire_at (§10
+# invalidation). CancelWakeup is included so the scheduler drops the dead
+# entry at the next scan instead of firing into a CAS loss.
+SCHEDULE_CHANGING = (UpsertCommitment, SnoozeCommitment, ScheduleWakeup, CancelWakeup)
 
 LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
@@ -56,6 +67,7 @@ class Worker:
         heartbeat_seconds: int = HEARTBEAT_SECONDS,
         idle_poll_seconds: float = IDLE_POLL_SECONDS,
         subscriber: Subscriber | None = None,
+        on_schedule_change: Callable[[], None] | None = None,
     ):
         self.db = db
         self.user_id = user_id
@@ -65,6 +77,7 @@ class Worker:
         self.heartbeat_seconds = heartbeat_seconds
         self.idle_poll_seconds = idle_poll_seconds
         self.subscriber = subscriber
+        self.on_schedule_change = on_schedule_change
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
 
@@ -220,6 +233,15 @@ class Worker:
                 await self._publish(
                     trigger_id, turn_id, event.seq, event.kind, event.data
                 )
+
+            # §10 invalidation: a command that created or moved a future
+            # fire_at pokes the in-process scheduler so it re-scans now
+            # rather than at the next hourly refresh. In-process only — a
+            # scheduler in another process relies on its reconcile scan.
+            if self.on_schedule_change is not None and any(
+                isinstance(c, SCHEDULE_CHANGING) for c in result.commands
+            ):
+                self.on_schedule_change()
         except Exception as exc:
             log.exception("turn %s failed for user %s", turn_id, self.user_id)
             await self._fail_turn(trigger, turn_id, seq + 1, exc)

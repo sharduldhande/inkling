@@ -1,8 +1,8 @@
 """Entrypoint: `python -m inkling <role>`.
 
 Roles api/worker/scheduler/delivery/calendar/jobs must each be independently
-runnable (§1); `all` runs everything in one asyncio process. api/worker/all are
-wired; scheduler/delivery/calendar/jobs land with their milestones.
+runnable (§1); `all` runs everything in one asyncio process. api/worker/
+scheduler/all are wired; delivery/calendar/jobs land with their milestones.
 """
 
 import argparse
@@ -60,7 +60,7 @@ def main() -> int:
         print(f"seeded user {args.user!r}")
         return 0
 
-    if args.role in ("api", "worker", "all"):
+    if args.role in ("api", "worker", "scheduler", "all"):
         import asyncio
 
         return asyncio.run(_serve(config, args.role))
@@ -70,11 +70,14 @@ def main() -> int:
 
 
 async def _serve(config: Config, role: str) -> int:
-    """Run the API, the workers, or both in one asyncio process (§1).
+    """Run the API, the workers, the scheduler, or all in one process (§1).
 
     - api: HTTP only; triggers are recorded, another process turns them.
     - worker: turns only; no HTTP socket.
-    - all: both in one process — the initial systemd shape.
+    - scheduler: timers only; refreshes every 60 s (the §10 reconcile scan —
+      no in-process invalidation event reaches a separate process).
+    - all: everything in one asyncio process — the initial systemd shape; the
+      scheduler nudges workers and workers poke the scheduler in-process.
     """
     import asyncio
 
@@ -82,11 +85,18 @@ async def _serve(config: Config, role: str) -> int:
     from inkling.api.broker import Broker
     from inkling.db.client import Database
     from inkling.inference.profile import ProfileRoutingGateway
+    from inkling.scheduler.scheduler import (
+        RECONCILE_SECONDS,
+        REFRESH_SECONDS,
+        Scheduler,
+    )
     from inkling.turns.supervisor import Supervisor
 
     roster = load_roster(config.chat_tokens_file)
     db = Database(config.database_url)
     await db.open()
+    scheduler_task = None
+    scheduler = None
     try:
         broker = Broker()
         supervisor = None
@@ -97,6 +107,29 @@ async def _serve(config: Config, role: str) -> int:
                 ProfileRoutingGateway(db),
                 subscriber=broker.publish,
             )
+        if role in ("scheduler", "all"):
+            scheduler = Scheduler(
+                db,
+                roster.user_ids,
+                refresh_seconds=(
+                    RECONCILE_SECONDS if role == "scheduler" else REFRESH_SECONDS
+                ),
+                nudge=supervisor.nudge if supervisor else None,
+            )
+            if supervisor is not None:
+                # Wire after both exist: worker commits poke the scheduler.
+                for worker in supervisor.workers.values():
+                    worker.on_schedule_change = scheduler.wake
+            scheduler_task = asyncio.create_task(
+                scheduler.run_forever(), name="scheduler"
+            )
+
+        if role == "scheduler":
+            try:
+                await scheduler_task
+            finally:
+                scheduler.stop()
+            return 0
 
         if role == "worker":
             await supervisor.start()
@@ -122,6 +155,11 @@ async def _serve(config: Config, role: str) -> int:
         await server.serve()  # lifespan starts/stops the supervisor
         return 0
     finally:
+        if scheduler is not None:
+            scheduler.stop()
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            await asyncio.gather(scheduler_task, return_exceptions=True)
         await db.close()
 
 

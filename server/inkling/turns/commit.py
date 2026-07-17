@@ -16,6 +16,7 @@ from typing import Any
 from psycopg import AsyncConnection
 
 from inkling.db.client import Database
+from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import triggers as triggers_q
 from inkling.db.queries import turns as turns_q
 from inkling.db.queries import users as users_q
@@ -196,5 +197,14 @@ async def commit_turn(
             output_tokens=result.output_tokens,
         )
         await triggers_q.set_status(conn, trigger_id, "done", turn_id=turn_id)
+
+        # §10: an occurrence trigger's successful turn is what "surfaced"
+        # means. Same transaction as the turn's own completion, so a crash
+        # can't record one without the other.
+        if trigger["source"] == "occurrence" and trigger["source_ref"]:
+            occurrence_id = int(trigger["source_ref"].split(":", 1)[1])
+            await commitments_q.mark_occurrence_surfaced(
+                conn, occurrence_id, turn_id=turn_id
+            )
 
     return events
