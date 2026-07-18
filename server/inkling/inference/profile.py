@@ -13,6 +13,7 @@ from inkling.db.client import Database
 from inkling.inference.gateway import (
     InferenceError,
     OnTextDelta,
+    ToolHandler,
     ToolSchema,
     TurnResult,
 )
@@ -32,6 +33,7 @@ class ProfileRoutingGateway:
         context: str,
         tools: list[ToolSchema],
         on_text_delta: OnTextDelta,
+        tool_handlers: dict[str, ToolHandler] | None = None,
     ) -> TurnResult:
         async with self.db.with_tenant(user_id) as conn:
             cur = await conn.execute(
@@ -72,4 +74,5 @@ class ProfileRoutingGateway:
             context=context,
             tools=tools,
             on_text_delta=on_text_delta,
+            tool_handlers=tool_handlers,
         )

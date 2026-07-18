@@ -44,7 +44,8 @@ ORDER BY h.id
 
 # See transcript.py on websearch_to_tsquery + OR-joined terms.
 _FTS = """
-SELECT id, occurred_at, kind, habit_id, note, ts_rank(search, query) AS rank
+SELECT id, occurred_at, kind, habit_id, value_num, note,
+       ts_rank(search, query) AS rank
 FROM events, websearch_to_tsquery('english', %s) query
 WHERE search @@ query
 ORDER BY rank DESC, occurred_at DESC

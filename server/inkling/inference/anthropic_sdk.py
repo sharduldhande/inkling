@@ -23,6 +23,7 @@ from inkling.inference.gateway import (
     EMIT_COMMANDS_INSTRUCTION,
     InferenceError,
     OnTextDelta,
+    ToolHandler,
     ToolSchema,
     TurnResult,
     with_one_retry,
@@ -49,13 +50,24 @@ class AnthropicSDKGateway:
         context: str,
         tools: list[ToolSchema],
         on_text_delta: OnTextDelta,
+        tool_handlers: dict[str, ToolHandler] | None = None,
     ) -> TurnResult:
         return await with_one_retry(
-            lambda: self._run(system=system, context=context, on_text_delta=on_text_delta)
+            lambda: self._run(
+                system=system,
+                context=context,
+                on_text_delta=on_text_delta,
+                tool_handlers=tool_handlers or {},
+            )
         )
 
     async def _run(
-        self, *, system: str, context: str, on_text_delta: OnTextDelta
+        self,
+        *,
+        system: str,
+        context: str,
+        on_text_delta: OnTextDelta,
+        tool_handlers: dict[str, ToolHandler],
     ) -> TurnResult:
         # Imported here so the api_key/stub paths never require the package.
         from claude_agent_sdk import (
@@ -86,12 +98,30 @@ class AnthropicSDKGateway:
             raw_commands.extend(args.get("commands") or [])
             return {"content": [{"type": "text", "text": "recorded"}]}
 
-        server = create_sdk_mcp_server(name="inkling", version="1.0.0", tools=[emit_commands])
+        sdk_tools = [emit_commands]
+        allowed = ["mcp__inkling__emit_commands"]
+
+        recall_handler = tool_handlers.get("recall")
+        if recall_handler is not None:
+            @tool(
+                "recall",
+                "Search your memory (past events and conversation) when the "
+                "current context is not enough. Read-only.",
+                {"query": str},
+            )
+            async def recall(args: dict[str, Any]) -> dict[str, Any]:
+                result = await recall_handler(args)
+                return {"content": [{"type": "text", "text": result}]}
+
+            sdk_tools.append(recall)
+            allowed.append("mcp__inkling__recall")
+
+        server = create_sdk_mcp_server(name="inkling", version="1.0.0", tools=sdk_tools)
 
         options = ClaudeAgentOptions(
             system_prompt=f"{system}\n\n{EMIT_COMMANDS_INSTRUCTION}",
             mcp_servers={"inkling": server},
-            allowed_tools=["mcp__inkling__emit_commands"],
+            allowed_tools=allowed,
             # Deny-by-default: file/bash/web tools are never approved (§7).
             permission_mode="dontAsk",
             env={"CLAUDE_CONFIG_DIR": self.config_dir},

@@ -61,13 +61,20 @@ FACTS_LIMIT = 12
 EPISODES_LIMIT = 6
 TODAY_EVENTS_LIMIT = 40
 
-# §8.1 section 10 gate: retrieval runs only if the trigger references the past.
-# A heuristic, tuned for recall over precision — a spurious retrieval costs a
-# few hundred budgeted tokens, a missed one loses the memory the user asked for.
+# §8.1 section 10 gate: retrieval runs only if the trigger references the past
+# — or names a domain whose data deliberately never rides in context
+# (food/exercise measurements live in memory, surfaced on demand; see the
+# "today so far" aggregation below and the recall tool). A heuristic, tuned
+# for recall over precision — a spurious retrieval costs a few hundred
+# budgeted tokens, a missed one loses the memory the user asked for. The
+# model-directed `recall` tool (turns/recall.py) is the ceiling above this
+# floor: it covers every case no regex anticipates.
 _PAST_RE = re.compile(
     r"\b(remember|recall|last (?:time|week|month|year|night)|yesterday"
     r"|earlier|previously|before|ago|used to|did i|have i|when did"
-    r"|what did|what was|history)\b",
+    r"|what did|what was|history"
+    r"|calories?|macros?|protein|ate|eat(?:en|s|ing)?|food|meals?"
+    r"|workouts?|exercised?|training|trained|weight|steps)\b",
     re.IGNORECASE,
 )
 
@@ -263,7 +270,15 @@ async def assemble_context(
         commitments_body = "(none)"
     sections.append(("commitments", "## Commitments (due / upcoming)", commitments_body))
 
-    today_lines = [_event_line(r, tz) for r in today]
+    # Measurements (food, weight, exercise numbers) are memory, not ambient
+    # context: they'd crowd every turn with breakfasts. One aggregate line
+    # keeps the model aware they exist; recall/the gate fetch detail on demand.
+    measurements = [r for r in today if r["kind"] == "measurement"]
+    today_lines = [_event_line(r, tz) for r in today if r["kind"] != "measurement"]
+    if measurements:
+        today_lines.append(
+            f"- measurements: {len(measurements)} logged today (use recall for detail)"
+        )
     streak_lines = [
         f"- {s['id']} ({s['title']}): "
         + (f"last done {_local(s['last_done'], tz)}" if s["last_done"] else "never done")

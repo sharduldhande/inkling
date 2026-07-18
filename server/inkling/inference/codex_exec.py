@@ -89,7 +89,13 @@ class CodexExecGateway:
         context: str,
         tools: list[ToolSchema],
         on_text_delta: OnTextDelta,
+        tool_handlers: dict[str, Any] | None = None,
     ) -> TurnResult:
+        # A one-shot subprocess has no mid-turn tool channel: recall is
+        # unavailable on this adapter, and §8's deterministic retrieval gate
+        # is the floor it falls back to (documented degradation, not an error).
+        if tool_handlers:
+            log.debug("codex adapter ignores tool handlers: %s", list(tool_handlers))
         return await with_one_retry(
             lambda: self._run(system=system, context=context, on_text_delta=on_text_delta)
         )

@@ -79,7 +79,8 @@ def test_schema_has_no_forbidden_commands():
     assert schema["required"] == ["commands"]
 
 
-def test_emit_commands_tool_is_the_only_tool():
+def test_emit_commands_tool_is_the_only_write_tool():
+    """recall (read-only) joined it post-spec; writes still go one way."""
     tool = emit_commands_tool()
 
     assert tool.name == "emit_commands"

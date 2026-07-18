@@ -303,11 +303,11 @@ async def test_tick_runs_a_turn_end_to_end(db: Database):
     triggers = await _rows(db, USER_A, "SELECT status FROM triggers WHERE id = %s", (sub.trigger_id,))
     assert triggers[0]["status"] == "done"
 
-    # The gateway saw the user's text in the context, a system prompt, and
-    # exactly the one command-emission tool (§7).
+    # The gateway saw the user's text in the context, a system prompt, the
+    # command-emission tool (§7), and the read-only recall tool (post-spec).
     assert "how are you" in gateway.calls[0]["context"]
     assert gateway.calls[0]["system"]
-    assert [t.name for t in gateway.calls[0]["tools"]] == ["emit_commands"]
+    assert [t.name for t in gateway.calls[0]["tools"]] == ["emit_commands", "recall"]
 
 
 async def test_turn_events_carry_v1_stream_shape(db: Database):
@@ -429,7 +429,9 @@ async def test_a_broken_subscriber_does_not_fail_the_turn(db: Database):
 
 
 class ExplodingGateway:
-    async def run_turn(self, *, user_id, system, context, tools, on_text_delta):
+    async def run_turn(
+        self, *, user_id, system, context, tools, on_text_delta, tool_handlers=None
+    ):
         raise RuntimeError("provider exploded")
 
 

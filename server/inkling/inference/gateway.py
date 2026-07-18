@@ -30,6 +30,12 @@ log = logging.getLogger(__name__)
 
 OnTextDelta = Callable[[str], Awaitable[None]]
 
+# A read tool's executor: takes the model's arguments, returns the tool_result
+# text. Handlers open their own short tenant transactions — §5.3 forbids a
+# transaction *held across* inference, not reads between tokens. emit_commands
+# deliberately has no handler: it is capture-only, applied at commit (§5.4).
+ToolHandler = Callable[[dict[str, Any]], Awaitable[str]]
+
 EMIT_COMMANDS_INSTRUCTION = (
     "After your reply, call the emit_commands tool exactly once with every "
     "state-changing command this turn requires; pass an empty commands list "
@@ -72,8 +78,9 @@ class InferenceGateway(Protocol):
         user_id: str,
         system: str,
         context: str,  # assembled per §8
-        tools: list[ToolSchema],  # the command emission tool only (§9)
+        tools: list[ToolSchema],  # emit_commands (§9) + read tools (recall)
         on_text_delta: OnTextDelta,
+        tool_handlers: dict[str, ToolHandler] | None = None,
     ) -> TurnResult: ...
 
 
@@ -107,7 +114,13 @@ async def with_one_retry(call: Callable[[], Awaitable[TurnResult]]) -> TurnResul
 
 
 class StubGateway:
-    """Deterministic gateway for tests: scripted reply, no network."""
+    """Deterministic gateway for tests: scripted reply, no network.
+
+    `recalls` scripts mid-turn read-tool calls: each dict is invoked against
+    the worker-provided recall handler before the reply streams, and the
+    results land in the recorded call as "recall_results" — so tests can
+    assert what the model *would have seen*.
+    """
 
     def __init__(
         self,
@@ -116,11 +129,13 @@ class StubGateway:
         *,
         chunk_size: int = 4,
         delay: float = 0.0,
+        recalls: list[dict[str, Any]] | None = None,
     ):
         self.reply = reply
         self.commands = commands or []
         self.chunk_size = chunk_size
         self.delay = delay
+        self.recalls = recalls or []
         self.calls: list[dict[str, Any]] = []
 
     async def run_turn(
@@ -131,9 +146,21 @@ class StubGateway:
         context: str,
         tools: list[ToolSchema],
         on_text_delta: OnTextDelta,
+        tool_handlers: dict[str, ToolHandler] | None = None,
     ) -> TurnResult:
+        recall_results = []
+        handler = (tool_handlers or {}).get("recall")
+        for args in self.recalls:
+            assert handler is not None, "scripted recall but no handler wired"
+            recall_results.append(await handler(args))
         self.calls.append(
-            {"user_id": user_id, "system": system, "context": context, "tools": tools}
+            {
+                "user_id": user_id,
+                "system": system,
+                "context": context,
+                "tools": tools,
+                "recall_results": recall_results,
+            }
         )
         for i in range(0, len(self.reply), self.chunk_size):
             if self.delay:

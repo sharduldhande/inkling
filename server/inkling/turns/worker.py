@@ -33,6 +33,7 @@ from inkling.turns.commands import (
 )
 from inkling.turns.commit import commit_turn
 from inkling.turns.context import assemble_context
+from inkling.turns.recall import make_recall_handler, recall_tool
 from inkling.turns.stream import StreamEvent
 
 log = logging.getLogger(__name__)
@@ -206,8 +207,12 @@ class Worker:
                     user_id=self.user_id,
                     system=system,
                     context=context,
-                    tools=[emit_commands_tool()],
+                    tools=[emit_commands_tool(), recall_tool()],
                     on_text_delta=on_text_delta,
+                    # Fresh handler per turn: the recall budget is per-turn.
+                    tool_handlers={
+                        "recall": make_recall_handler(self.db, self.user_id)
+                    },
                 )
             )
             lease_waiter = asyncio.create_task(lease_lost.wait())
