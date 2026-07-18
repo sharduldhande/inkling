@@ -274,26 +274,18 @@ private struct HeatmapCell: View {
         return originalIndex < firstDataIndex
     }
 
+    private static let unfilled = Color(uiColor: .quaternarySystemFill)
+
     private var fill: Color {
-        guard let day, !isNeutral else { return .clear }
+        guard let day else { return .clear }
+        guard !isNeutral else { return Self.unfilled }
         switch mode {
         case .exercise:
-            return day.exercised ? Color("HeatmapGreen") : .clear
+            return day.exercised ? Color("HeatmapGreen") : Self.unfilled
         case .calories:
-            if !day.logged { return isToday ? .clear : Color("HeatmapRed") }
+            if !day.logged { return isToday ? Self.unfilled : Color("HeatmapRed") }
             if let kcalQuota, day.kcal > kcalQuota { return Color("HeatmapOrange") }
             return Color("HeatmapGreen")
-        }
-    }
-
-    private var showsEmptyBorder: Bool {
-        guard let day else { return false }
-        if isNeutral { return true }
-        switch mode {
-        case .exercise:
-            return !day.exercised
-        case .calories:
-            return !day.logged && isToday
         }
     }
 
@@ -301,12 +293,6 @@ private struct HeatmapCell: View {
         RoundedRectangle(cornerRadius: 2)
             .fill(fill)
             .frame(width: 8, height: 8)
-            .overlay {
-                if showsEmptyBorder {
-                    RoundedRectangle(cornerRadius: 2)
-                        .stroke(.quaternary, lineWidth: 0.5)
-                }
-            }
             .overlay {
                 if isToday {
                     RoundedRectangle(cornerRadius: 3)

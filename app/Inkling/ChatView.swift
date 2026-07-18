@@ -84,30 +84,33 @@ struct ChatView: View {
                 }
             }
 
-            Divider()
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField("Message Inkling", text: $store.draft, axis: .vertical)
-                    .lineLimit(1...5)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($inputFocused)
-                    .submitLabel(.send)
-                    .onSubmit {
-                        if !store.isTurnInFlight { store.send() }
-                    }
+            GlassEffectContainer {
+                HStack(alignment: .bottom, spacing: 10) {
+                    TextField("Message Inkling", text: $store.draft, axis: .vertical)
+                        .lineLimit(1...5)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .focused($inputFocused)
+                        .submitLabel(.send)
+                        .onSubmit {
+                            if !store.isTurnInFlight { store.send() }
+                        }
 
-                Button { store.send() } label: {
-                    Image(systemName: "paperplane.fill")
-                        .font(.title3)
-                        .frame(width: 32, height: 32)
+                    Button { store.send() } label: {
+                        Image(systemName: "paperplane.fill")
+                            .font(.title3)
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.circle)
+                    .disabled(store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isTurnInFlight)
+                    .accessibilityLabel("Send")
                 }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.circle)
-                .disabled(store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isTurnInFlight)
-                .accessibilityLabel("Send")
             }
             .padding(.horizontal)
             .padding(.vertical, 9)
-            .background(.bar)
         }
         .animation(.easeInOut(duration: 0.2), value: store.healthCaption)
         .onChange(of: store.focusRequestID) { _, _ in
