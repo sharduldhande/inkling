@@ -229,7 +229,8 @@ def test_codex_argv_is_sandboxed_and_non_interactive():
 
     assert argv[:2] == ["codex", "exec"]
     assert ("--sandbox", "read-only") == tuple(argv[argv.index("--sandbox") : argv.index("--sandbox") + 2])
-    assert ("--ask-for-approval", "never") == tuple(argv[argv.index("--ask-for-approval") : argv.index("--ask-for-approval") + 2])
+    # codex-cli >= 0.144 removed --ask-for-approval from exec (non-interactive by default)
+    assert "--ask-for-approval" not in argv
     assert "--ephemeral" in argv
     assert "--skip-git-repo-check" in argv
     assert ("--model", "gpt-5.4") == tuple(argv[argv.index("--model") : argv.index("--model") + 2])
