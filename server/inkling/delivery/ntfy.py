@@ -27,8 +27,14 @@ class DeliveryError(Exception):
 
 
 class Channel(Protocol):
-    async def send(self, *, topic: str, body: str, title: str = DEFAULT_TITLE) -> str:
-        """Deliver one message; returns the provider's message id."""
+    async def send(
+        self, *, topic: str, body: str, title: str = DEFAULT_TITLE, user_id: str = ""
+    ) -> str:
+        """Deliver one message; returns the provider's message id.
+
+        `user_id` exists for channels whose auth is per-user (calendar);
+        ntfy ignores it — the topic is the whole address.
+        """
         ...
 
 
@@ -40,7 +46,9 @@ class NtfyClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def send(self, *, topic: str, body: str, title: str = DEFAULT_TITLE) -> str:
+    async def send(
+        self, *, topic: str, body: str, title: str = DEFAULT_TITLE, user_id: str = ""
+    ) -> str:
         try:
             response = await self._client.post(
                 f"{self.base_url}/{topic}",
@@ -67,7 +75,9 @@ class StubChannel:
         self.sent: list[dict[str, Any]] = []
         self.fail_times = fail_times
 
-    async def send(self, *, topic: str, body: str, title: str = DEFAULT_TITLE) -> str:
+    async def send(
+        self, *, topic: str, body: str, title: str = DEFAULT_TITLE, user_id: str = ""
+    ) -> str:
         if self.fail_times > 0:
             self.fail_times -= 1
             raise DeliveryError("stub: scripted failure")

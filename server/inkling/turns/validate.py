@@ -29,6 +29,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+from inkling.db.queries import calendar as calendar_q
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import docs as docs_q
 from inkling.db.queries import events as events_q
@@ -282,10 +283,13 @@ async def _validate_calendar(
         return "ends_at must be after starts_at"
     if duration >= MAX_CALENDAR_DURATION:
         return f"event spans {duration} — longer than a day is almost certainly a mistake"
-    # §12 (the calendar adapter) isn't built. Rejecting here rather than in
-    # apply.py keeps the honest-degradation path identical to every other
-    # rejection: the user is told it didn't happen, in the reply, every time.
-    return "calendar writes aren't available yet"
+    # "Never on someone else's calendar" (§9.2): the target must be one of the
+    # user's own configured calendars. RLS scopes the lookup, so another
+    # user's calendar id simply reads as unknown.
+    states = await calendar_q.states(conn)
+    if not any(s["calendar_id"] == cmd.calendar_id for s in states):
+        return f"'{cmd.calendar_id}' is not one of your configured calendars"
+    return None
 
 
 async def _validate_notify(conn: AsyncConnection, cmd: Notify) -> str | None:

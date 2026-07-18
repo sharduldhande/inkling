@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
-from inkling.api import routes_chat, routes_health, routes_history
+from inkling.api import routes_calendar, routes_chat, routes_health, routes_history
 from inkling.api.auth import Roster
 from inkling.api.broker import Broker
 from inkling.db.client import Database
@@ -38,6 +38,7 @@ def create_app(
     *,
     broker: Broker | None = None,
     supervisor: Supervisor | None = None,
+    calendar_sync=None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -54,10 +55,12 @@ def create_app(
     app.state.roster = roster
     app.state.broker = broker or Broker()
     app.state.supervisor = supervisor or _NoSupervisor()
+    app.state.calendar_sync = calendar_sync  # None when calendar is off (§12)
 
     app.include_router(routes_health.router)
     app.include_router(routes_history.router)
     app.include_router(routes_chat.router)
+    app.include_router(routes_calendar.router)
 
     @app.exception_handler(404)
     async def not_found(request: Request, exc) -> Response:

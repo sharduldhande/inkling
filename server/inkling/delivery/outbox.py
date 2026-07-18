@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 from inkling.db.client import Database
 from inkling.db.queries import deliveries as deliveries_q
-from inkling.delivery.ntfy import Channel
+from inkling.delivery.ntfy import Channel, DeliveryError
 
 log = logging.getLogger(__name__)
 
@@ -51,10 +51,16 @@ class Drainer:
         channel: Channel,
         operator_topic: str = "",
         reconcile_seconds: float = RECONCILE_SECONDS,
+        extra_channels: dict[str, Channel] | None = None,
     ):
         self.db = db
         self.user_ids = user_ids
-        self.channel = channel
+        # Rows route by their channel column; ntfy is the default and always
+        # present. A row for an unconfigured channel (calendar off) fails its
+        # attempts into dead_letter + operator alert — honest degradation,
+        # same as any other undeliverable row.
+        self.channels: dict[str, Channel] = {"ntfy": channel}
+        self.channels.update(extra_channels or {})
         self.operator_topic = operator_topic
         self.reconcile_seconds = reconcile_seconds
         self._wake = asyncio.Event()
@@ -148,8 +154,15 @@ class Drainer:
             return 0  # another path already owns or finished it
 
         try:
-            provider_id = await self.channel.send(
-                topic=claimed["destination"], body=claimed["body"]
+            sender = self.channels.get(claimed["channel"])
+            if sender is None:
+                raise DeliveryError(
+                    f"no '{claimed['channel']}' channel configured"
+                )
+            provider_id = await sender.send(
+                topic=claimed["destination"],
+                body=claimed["body"],
+                user_id=user_id,
             )
         except Exception as exc:
             await self._record_failure(user_id, claimed, now, exc)
