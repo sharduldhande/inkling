@@ -15,7 +15,10 @@ struct ChatView: View {
                 )
                 .font(.caption)
                 .foregroundStyle(caption == .online ? Color.green : Color.secondary)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 5)
+                .glassEffect()
+                .padding(.vertical, 4)
                 .transition(.opacity)
             }
 
@@ -73,8 +76,8 @@ struct ChatView: View {
                                     .font(.caption.weight(.semibold))
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 7)
-                                    .background(.thinMaterial, in: Capsule())
                             }
+                            .buttonStyle(.glass)
                             .padding(12)
                         }
                     }
@@ -97,6 +100,8 @@ struct ChatView: View {
                         .font(.title3)
                         .frame(width: 32, height: 32)
                 }
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.circle)
                 .disabled(store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isTurnInFlight)
                 .accessibilityLabel("Send")
             }

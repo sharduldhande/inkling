@@ -306,7 +306,13 @@ reference into the chat input so the user can say what they want done
 
 ## B2. Hard constraints (violating any of these is a failed build)
 
-- SwiftUI. iOS deployment target 17.0.
+- SwiftUI. iOS deployment target 26.0, built with the Xcode 26 SDK. The app
+  adopts the system Liquid Glass design: tab/nav bars and sheets take it
+  automatically from the SDK; custom floating controls (send button, "↓ New"
+  pill, transient banners/captions) use `.glassEffect()` /
+  `.buttonStyle(.glass)`. Content surfaces (message bubbles, quota tiles,
+  ledger rows, heatmaps) stay on standard backgrounds per the HIG — glass is
+  the control layer, not the content layer.
 - Free personal-team signing must be sufficient. Therefore: NO push
   notification entitlements, NO APNs registration, NO Sign in with Apple, NO
   App Groups, NO iCloud, NO background modes, NO HealthKit. Notifications

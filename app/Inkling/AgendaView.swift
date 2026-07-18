@@ -80,7 +80,7 @@ struct AgendaView: View {
             .font(.caption)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .background(.thinMaterial, in: Capsule())
+            .glassEffect()
             .padding(.top, 8)
     }
 
