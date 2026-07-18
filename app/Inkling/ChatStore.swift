@@ -113,7 +113,17 @@ final class ChatStore {
             messages.sort { lhs, rhs in
                 let left = lhs.serverTS.map(Double.init) ?? lhs.date.timeIntervalSince1970 * 1_000
                 let right = rhs.serverTS.map(Double.init) ?? rhs.date.timeIntervalSince1970 * 1_000
-                if left == right { return lhs.localID.uuidString < rhs.localID.uuidString }
+                if left == right {
+                    // A turn's user message and reply share one server ts
+                    // (written in one transaction); the bigint id is the
+                    // server's true order. A UUID tiebreak here is a coin
+                    // flip that visibly swapped a message under its reply.
+                    if let li = lhs.serverID.flatMap({ Int($0) }),
+                       let ri = rhs.serverID.flatMap({ Int($0) }) {
+                        return li < ri
+                    }
+                    return lhs.localID.uuidString < rhs.localID.uuidString
+                }
                 return left < right
             }
             persist()
