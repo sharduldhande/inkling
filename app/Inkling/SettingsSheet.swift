@@ -121,8 +121,14 @@ struct SettingsSheet: View {
     }
 
     private func validatedURL() -> URL? {
-        guard let url = URL(string: serverURL), url.scheme?.lowercased() == "https" else { return nil }
-        return url
+        guard let url = URL(string: serverURL) else { return nil }
+        let scheme = url.scheme?.lowercased()
+        if scheme == "https" { return url }
+        // Dev affordance: plain http is allowed for loopback only.
+        if scheme == "http", let host = url.host(), ["localhost", "127.0.0.1"].contains(host) {
+            return url
+        }
+        return nil
     }
 }
 
