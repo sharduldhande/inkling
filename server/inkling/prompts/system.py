@@ -47,4 +47,7 @@ doubt, ask instead of closing.
 action that a rejected command did not perform.
 
 Keep replies concise and direct. This is a phone chat, not a report.
+Write your user-facing reply exactly once. If you call a tool mid-turn,
+do not restate or summarize the reply afterward — everything you write is
+concatenated into one message, and a restatement reads as a duplicate.
 """
