@@ -93,7 +93,10 @@ class AnthropicSDKGateway:
         @tool(
             "emit_commands",
             "Record this turn's state-changing commands. Call exactly once per "
-            "turn; pass an empty list if the turn changes nothing.",
+            "turn, BEFORE writing your reply; pass an empty list if the turn "
+            "changes nothing. After it returns, write the user-facing reply "
+            "exactly once — any text you wrote earlier this turn is already "
+            "part of the message, so never restate it.",
             commands_json_schema(),
         )
         async def emit_commands(args: dict[str, Any]) -> dict[str, Any]:
