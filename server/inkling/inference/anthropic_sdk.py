@@ -93,10 +93,9 @@ class AnthropicSDKGateway:
         @tool(
             "emit_commands",
             "Record this turn's state-changing commands. Call exactly once per "
-            "turn, BEFORE writing your reply; pass an empty list if the turn "
-            "changes nothing. After it returns, write the user-facing reply "
-            "exactly once — any text you wrote earlier this turn is already "
-            "part of the message, so never restate it.",
+            "turn; pass an empty list if the turn changes nothing. Text you "
+            "write after this call is discarded unless you wrote none before "
+            "it — write your reply first, then call this.",
             commands_json_schema(),
         )
         async def emit_commands(args: dict[str, Any]) -> dict[str, Any]:
@@ -146,12 +145,14 @@ class AnthropicSDKGateway:
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock) and block.text:
-                            # Byte-identical repeat of the previous block —
-                            # seen live on every SDK turn (duplicated reply in
-                            # the stream AND the transcript). Mechanical or
-                            # verbatim-restated, the user should see it once.
-                            if text_parts and text_parts[-1] == block.text:
-                                log.debug("skipping duplicate text block")
+                            # One reply phase only. The model reliably writes
+                            # a reply, calls emit_commands, then restates the
+                            # reply (verbatim or rephrased) no matter what the
+                            # prompt says — seen on every live SDK turn. Keep
+                            # the first non-empty phase: post-tool text counts
+                            # only when the model said nothing beforehand.
+                            if emitted and text_parts:
+                                log.debug("dropping post-emit restatement")
                                 continue
                             text_parts.append(block.text)
                             await on_text_delta(block.text)
