@@ -278,15 +278,27 @@ def parse_commands(raw: Any, *, notes: list[str] | None = None) -> list[Command]
 
 
 def commands_json_schema() -> dict[str, Any]:
-    """JSON schema for the emit_commands tool input (§7)."""
-    return {
+    """JSON schema for the emit_commands tool input (§7).
+
+    The union schema's $defs must be hoisted to the ROOT of the wrapper:
+    its "#/$defs/..." refs resolve from the document root, and a strict
+    validator (the SDK's in-process MCP server) rejects every tool call
+    when they dangle. Seen live: the model reported "the command channel
+    is rejecting every command" on the first schema-advertised prod turn.
+    """
+    items = _command_adapter.json_schema()
+    defs = items.pop("$defs", {})
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": {
             "commands": {
                 "type": "array",
                 "description": "State-changing commands for this turn; empty if none.",
-                "items": _command_adapter.json_schema(),
+                "items": items,
             }
         },
         "required": ["commands"],
     }
+    if defs:
+        schema["$defs"] = defs
+    return schema
