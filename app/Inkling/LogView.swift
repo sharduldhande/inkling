@@ -188,6 +188,8 @@ private struct HeatmapsView: View {
             heatmap(title: "Exercise", mode: .exercise)
         }
         .frame(maxWidth: .infinity)
+        .padding(13)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func heatmap(title: String, mode: HeatmapMode) -> some View {
@@ -268,7 +270,10 @@ private struct HeatmapCell: View {
     let kcalQuota: Double?
     let mode: HeatmapMode
 
-    private var isToday: Bool { day?.date == todayID }
+    private var isToday: Bool {
+        guard let day, let todayID else { return false }
+        return day.date == todayID
+    }
     private var isNeutral: Bool {
         guard let firstDataIndex, let originalIndex else { return true }
         return originalIndex < firstDataIndex
