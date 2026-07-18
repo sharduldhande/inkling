@@ -35,7 +35,7 @@ from inkling.inference.gateway import (
     TurnResult,
     with_one_retry,
 )
-from inkling.turns.commands import Command, parse_commands
+from inkling.turns.commands import Command, commands_json_schema, parse_commands
 
 log = logging.getLogger(__name__)
 
@@ -47,8 +47,20 @@ EMIT_BLOCK_INSTRUCTION = (
     "state-changing command this turn requires — an empty list if none. "
     "Commands are the only way anything is recorded; never claim an action "
     "you did not emit a command for. Everything before that block is shown "
-    "to the user; the block itself is not."
+    "to the user; the block itself is not. Commands must match this JSON "
+    "Schema exactly — invalid commands are dropped, so invent no field "
+    "names:\n"
 )
+
+
+def emit_block_instruction() -> str:
+    """The prose instruction plus the real command schema.
+
+    The tool-call adapters hand the model commands_json_schema() as the
+    emit_commands tool definition; without the same schema in its prompt the
+    codex model guesses field names (seen live: LogWeight{weight_kg}).
+    """
+    return EMIT_BLOCK_INSTRUCTION + json.dumps(commands_json_schema(), separators=(",", ":"))
 
 _EMIT_BLOCK = re.compile(r"```emit_commands\s*\n(.*?)```\s*", re.DOTALL)
 
@@ -127,7 +139,7 @@ class CodexExecGateway:
     async def _run(
         self, *, system: str, context: str, on_text_delta: OnTextDelta
     ) -> TurnResult:
-        prompt = f"{system}\n\n{EMIT_BLOCK_INSTRUCTION}\n\n{context}"
+        prompt = f"{system}\n\n{emit_block_instruction()}\n\n{context}"
 
         with tempfile.TemporaryDirectory(prefix="inkling-codex-") as scratch:
             last_message_path = str(Path(scratch) / "last-message.txt")
