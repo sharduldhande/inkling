@@ -183,6 +183,7 @@ class Worker:
 
     async def run_turn(self, trigger: dict[str, Any], turn_id: int) -> None:
         trigger_id = int(trigger["id"])
+        started = asyncio.get_running_loop().time()
         lease_lost = asyncio.Event()
         heart = asyncio.create_task(self._heartbeat(turn_id, lease_lost))
         seq = 0
@@ -256,6 +257,16 @@ class Worker:
                 isinstance(c, Notify) for c in result.commands
             ):
                 self.on_delivery_queued()
+
+            # §15 per-turn summary line (context.py logs the token counts,
+            # commit.py the accept/reject split; this is the roll-up).
+            log.info(
+                "turn %s done: user=%s trigger=%s source=%s model=%s "
+                "commands=%d duration=%.1fs",
+                turn_id, self.user_id, trigger_id, trigger["source"],
+                result.model, len(result.commands),
+                asyncio.get_running_loop().time() - started,
+            )
         except Exception as exc:
             log.exception("turn %s failed for user %s", turn_id, self.user_id)
             await self._fail_turn(trigger, turn_id, seq + 1, exc)

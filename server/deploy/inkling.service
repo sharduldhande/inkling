@@ -1,0 +1,31 @@
+# systemd user unit (§15). Install:
+#   mkdir -p ~/.config/systemd/user && cp deploy/inkling.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now inkling
+#   loginctl enable-linger $USER   # keep it running without a login session
+#
+# cron/systemd read no rc files (the v1 gotcha): PATH is explicit, env comes
+# only from EnvironmentFile. No crontab entries anywhere — §10/§13 timers live
+# in the process.
+
+[Unit]
+Description=Inkling personal assistant (all roles)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+# Absolute venv python; deploy.sh maintains the 'current' symlink.
+ExecStart=%h/inkling/current/.venv/bin/python -m inkling all
+WorkingDirectory=%h/inkling/current
+EnvironmentFile=%h/.inkling/env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=3
+# §15 memory budget: python RSS target <250 MB; the hard cap is a backstop.
+MemoryMax=512M
+# journald gets structured JSON lines when LOG_FORMAT=json is set in env.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

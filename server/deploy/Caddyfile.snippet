@@ -1,0 +1,8 @@
+# Caddy vhost (§15) — identical shape to v1, including flush_interval -1
+# (SSE must stream, not buffer). Merge into the existing Caddyfile.
+
+inkling.example.com {
+    reverse_proxy 127.0.0.1:8899 {
+        flush_interval -1
+    }
+}
