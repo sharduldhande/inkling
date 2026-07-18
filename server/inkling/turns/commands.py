@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +30,16 @@ EventKind = Literal[
 ]
 
 
-class NotifyPolicy(BaseModel):
+class _CommandBase(BaseModel):
+    """Reject unknown fields outright: with all-optional commands (SetTargets)
+    a wrong field name would otherwise parse as an EMPTY command — seen live
+    from two different models. A hard ValidationError routes through the
+    parse_commands notes path instead, telling the user what failed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class NotifyPolicy(_CommandBase):
     """§4.6 commitments.notify_policy shape."""
 
     repeat_after_min: int = 15
@@ -39,7 +48,7 @@ class NotifyPolicy(BaseModel):
     quiet_hours: Literal["defer", "override"] = "defer"
 
 
-class AppendEvent(BaseModel):
+class AppendEvent(_CommandBase):
     type: Literal["AppendEvent"]
     kind: EventKind
     habit_id: str | None = None
@@ -84,7 +93,7 @@ WorkoutActivity = Literal[
 ]
 
 
-class LogMeal(BaseModel):
+class LogMeal(_CommandBase):
     type: Literal["LogMeal"]
     note: str  # what was eaten, the user's words or the model's identification
     kcal: float | None = None
@@ -95,7 +104,7 @@ class LogMeal(BaseModel):
     supersedes_id: int | None = None  # correction: this row replaces that one
 
 
-class LogWorkout(BaseModel):
+class LogWorkout(_CommandBase):
     type: Literal["LogWorkout"]
     activity_type: WorkoutActivity
     duration_min: float
@@ -105,20 +114,20 @@ class LogWorkout(BaseModel):
     occurred_at: datetime | None = None
 
 
-class LogWeight(BaseModel):
+class LogWeight(_CommandBase):
     type: Literal["LogWeight"]
     value: float
     unit: Literal["kg", "lb"]
     occurred_at: datetime | None = None
 
 
-class SetTargets(BaseModel):
+class SetTargets(_CommandBase):
     type: Literal["SetTargets"]
     kcal_quota: int | None = None
     protein_quota_g: int | None = None
 
 
-class UpsertCommitment(BaseModel):
+class UpsertCommitment(_CommandBase):
     type: Literal["UpsertCommitment"]
     id: int | None = None
     expected_version: int | None = None
@@ -130,39 +139,39 @@ class UpsertCommitment(BaseModel):
     notify_policy: NotifyPolicy | None = None
 
 
-class CompleteCommitment(BaseModel):
+class CompleteCommitment(_CommandBase):
     type: Literal["CompleteCommitment"]
     id: int
     expected_version: int
     reason: str
 
 
-class SnoozeCommitment(BaseModel):
+class SnoozeCommitment(_CommandBase):
     type: Literal["SnoozeCommitment"]
     id: int
     expected_version: int
     until: datetime
 
 
-class UpdateWorkingState(BaseModel):
+class UpdateWorkingState(_CommandBase):
     type: Literal["UpdateWorkingState"]
     new_content: str
     reason: str
 
 
-class ScheduleWakeup(BaseModel):
+class ScheduleWakeup(_CommandBase):
     type: Literal["ScheduleWakeup"]
     fire_at: datetime | None = None
     offset_minutes: int | None = None
     purpose: str
 
 
-class CancelWakeup(BaseModel):
+class CancelWakeup(_CommandBase):
     type: Literal["CancelWakeup"]
     id: int
 
 
-class CreateCalendarEvent(BaseModel):
+class CreateCalendarEvent(_CommandBase):
     type: Literal["CreateCalendarEvent"]
     calendar_id: str
     summary: str
@@ -171,7 +180,7 @@ class CreateCalendarEvent(BaseModel):
     description: str | None = None
 
 
-class Notify(BaseModel):  # rare: extra push beyond the reply
+class Notify(_CommandBase):  # rare: extra push beyond the reply
     type: Literal["Notify"]
     body: str
 
@@ -184,14 +193,14 @@ class Notify(BaseModel):  # rare: extra push beyond the reply
 # consolidation job. goals stays command-less: only a human edits goals.
 
 
-class UpdateDoc(BaseModel):
+class UpdateDoc(_CommandBase):
     type: Literal["UpdateDoc"]
     kind: Literal["patterns", "digest7"]
     new_content: str
     reason: str
 
 
-class UpsertMemoryFact(BaseModel):
+class UpsertMemoryFact(_CommandBase):
     type: Literal["UpsertMemoryFact"]
     subject: str
     predicate: str

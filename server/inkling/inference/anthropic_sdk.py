@@ -28,7 +28,7 @@ from inkling.inference.gateway import (
     TurnResult,
     with_one_retry,
 )
-from inkling.turns.commands import parse_commands
+from inkling.turns.commands import commands_json_schema, parse_commands
 
 log = logging.getLogger(__name__)
 
@@ -86,11 +86,15 @@ class AnthropicSDKGateway:
         raw_commands: list[Any] = []
         emitted = False
 
+        # Full JSON schema, not {"commands": list}: with a bare untyped list
+        # the model guesses field names, and (pre extra=forbid) a wrong guess
+        # on an all-optional command parsed as an EMPTY command. Seen live:
+        # SetTargets arriving as {} on the first prod turn.
         @tool(
             "emit_commands",
             "Record this turn's state-changing commands. Call exactly once per "
             "turn; pass an empty list if the turn changes nothing.",
-            {"commands": list},
+            commands_json_schema(),
         )
         async def emit_commands(args: dict[str, Any]) -> dict[str, Any]:
             nonlocal emitted
