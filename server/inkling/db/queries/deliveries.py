@@ -22,9 +22,14 @@ RETURNING *
 
 # §11 drain scan: rows ready to attempt, oldest promise first. No lower bound —
 # rows that came due while the process was down are the boot catch-up set.
+# channel='healthkit' is excluded the same way calendar hints are excluded from
+# the worker's trigger claim: those rows are PULLED by the iOS app, and a
+# drainer that claimed one would only dead-letter it (no push channel exists
+# for a phone) and page the operator about its own misunderstanding.
 _DUE = """
 SELECT * FROM deliveries
 WHERE status IN ('queued', 'retry_wait')
+  AND channel <> 'healthkit'
   AND COALESCE(not_before, created_at) <= %s
 ORDER BY COALESCE(not_before, created_at), id
 """
@@ -33,6 +38,7 @@ _NEXT_DUE = """
 SELECT min(COALESCE(not_before, created_at)) AS next_due
 FROM deliveries
 WHERE status IN ('queued', 'retry_wait')
+  AND channel <> 'healthkit'
 """
 
 # Claiming is a compare-and-set on status, like every §10 fire: two drainers

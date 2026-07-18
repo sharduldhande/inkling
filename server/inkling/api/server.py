@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
 from inkling.api import routes_calendar, routes_chat, routes_health, routes_history
+from inkling.api import routes_panes
 from inkling.api.auth import Roster
 from inkling.api.broker import Broker
 from inkling.db.client import Database
@@ -61,6 +62,7 @@ def create_app(
     app.include_router(routes_history.router)
     app.include_router(routes_chat.router)
     app.include_router(routes_calendar.router)
+    app.include_router(routes_panes.router)
 
     @app.exception_handler(404)
     async def not_found(request: Request, exc) -> Response:

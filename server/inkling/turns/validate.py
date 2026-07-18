@@ -33,6 +33,7 @@ from inkling.db.queries import calendar as calendar_q
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import docs as docs_q
 from inkling.db.queries import events as events_q
+from inkling.db.queries import health as health_q
 from inkling.db.queries import wakeups as wakeups_q
 from inkling.turns.commands import (
     AppendEvent,
@@ -40,8 +41,12 @@ from inkling.turns.commands import (
     Command,
     CompleteCommitment,
     CreateCalendarEvent,
+    LogMeal,
+    LogWeight,
+    LogWorkout,
     Notify,
     ScheduleWakeup,
+    SetTargets,
     SnoozeCommitment,
     UpdateDoc,
     UpdateWorkingState,
@@ -66,6 +71,19 @@ FUTURE_EVENT_TOLERANCE = timedelta(minutes=5)
 
 # §9.2: calendar events longer than this are a parse error, not a plan.
 MAX_CALENDAR_DURATION = timedelta(hours=24)
+
+# §9.2 health bounds: generous enough for real life, tight enough that a
+# hallucinated number (a 65,000 kcal meal, a 40-hour run) is rejected with a
+# reason instead of poisoning the quota math the app displays.
+MEAL_KCAL_MAX = 5000
+MACRO_G_MAX = 500
+WORKOUT_MIN_RANGE = (1, 600)
+WORKOUT_KCAL_MAX = 3000
+WORKOUT_KM_MAX = 200
+WEIGHT_KG_RANGE = (20, 400)
+LB_PER_KG = 2.20462
+TARGET_KCAL_RANGE = (800, 6000)
+TARGET_PROTEIN_RANGE = (20, 400)
 
 # Markers that say a working-state line is closed. Deliberately generous: a
 # false "closed" only costs us a guard, a false "open" blocks a legitimate
@@ -163,6 +181,88 @@ async def _validate_append_event(
             )
     if cmd.habit_id is not None and await events_q.habit(conn, cmd.habit_id) is None:
         return f"unknown habit '{cmd.habit_id}'"
+    return None
+
+
+def _future(occurred_at: datetime | None) -> str | None:
+    """Same rule as events: backdating is fine, predicting is not."""
+    if occurred_at is None:
+        return None
+    drift = _aware(occurred_at) - datetime.now(timezone.utc)
+    if drift > FUTURE_EVENT_TOLERANCE:
+        return (
+            f"occurred_at is {int(drift.total_seconds() // 60)} min in the "
+            "future; log what happened, not what will"
+        )
+    return None
+
+
+async def _validate_log_meal(conn: AsyncConnection, cmd: LogMeal) -> str | None:
+    if not cmd.note.strip():
+        return "note is required — a meal with no description can't be recalled"
+    if reason := _future(cmd.occurred_at):
+        return reason
+    if cmd.kcal is not None and not 0 <= cmd.kcal <= MEAL_KCAL_MAX:
+        return f"kcal {cmd.kcal} is outside 0–{MEAL_KCAL_MAX} for one meal"
+    for name in ("protein_g", "carb_g", "fat_g"):
+        grams = getattr(cmd, name)
+        if grams is not None and not 0 <= grams <= MACRO_G_MAX:
+            return f"{name} {grams} is outside 0–{MACRO_G_MAX} for one meal"
+    if cmd.supersedes_id is not None:
+        old = await health_q.intake_get(conn, cmd.supersedes_id)
+        if old is None:
+            return f"meal {cmd.supersedes_id} not found"  # RLS: or not yours
+        if await health_q.intake_is_superseded(conn, cmd.supersedes_id):
+            return (
+                f"meal {cmd.supersedes_id} was already corrected; "
+                "supersede the newest row instead"
+            )
+    return None
+
+
+async def _validate_log_workout(conn: AsyncConnection, cmd: LogWorkout) -> str | None:
+    if reason := _future(cmd.occurred_at):
+        return reason
+    lo, hi = WORKOUT_MIN_RANGE
+    if not lo <= cmd.duration_min <= hi:
+        return f"duration_min {cmd.duration_min} is outside {lo}–{hi}"
+    if cmd.kcal_burned is not None and not 0 <= cmd.kcal_burned <= WORKOUT_KCAL_MAX:
+        return f"kcal_burned {cmd.kcal_burned} is outside 0–{WORKOUT_KCAL_MAX}"
+    if cmd.distance_km is not None and not 0 <= cmd.distance_km <= WORKOUT_KM_MAX:
+        return f"distance_km {cmd.distance_km} is outside 0–{WORKOUT_KM_MAX}"
+    return None
+
+
+async def _validate_log_weight(conn: AsyncConnection, cmd: LogWeight) -> str | None:
+    if reason := _future(cmd.occurred_at):
+        return reason
+    kg = cmd.value / LB_PER_KG if cmd.unit == "lb" else cmd.value
+    lo, hi = WEIGHT_KG_RANGE
+    if not lo <= kg <= hi:
+        return (
+            f"{cmd.value} {cmd.unit} is outside the plausible {lo}–{hi} kg "
+            "range — double-check with the user"
+        )
+    return None
+
+
+async def _validate_set_targets(
+    conn: AsyncConnection, cmd: SetTargets, *, consolidation: bool
+) -> str | None:
+    # Quotas are the user's stated intent; the consolidation job summarizes,
+    # it does not set policy.
+    if consolidation:
+        return "targets can only change in a conversation with the user"
+    if cmd.kcal_quota is None and cmd.protein_quota_g is None:
+        return "give kcal_quota or protein_quota_g (or both)"
+    if cmd.kcal_quota is not None:
+        lo, hi = TARGET_KCAL_RANGE
+        if not lo <= cmd.kcal_quota <= hi:
+            return f"kcal_quota {cmd.kcal_quota} is outside {lo}–{hi}"
+    if cmd.protein_quota_g is not None:
+        lo, hi = TARGET_PROTEIN_RANGE
+        if not lo <= cmd.protein_quota_g <= hi:
+            return f"protein_quota_g {cmd.protein_quota_g} is outside {lo}–{hi}"
     return None
 
 
@@ -343,6 +443,16 @@ async def validate_commands(
     for cmd in commands:
         if isinstance(cmd, AppendEvent):
             reason = await _validate_append_event(conn, cmd)
+        elif isinstance(cmd, LogMeal):
+            reason = await _validate_log_meal(conn, cmd)
+        elif isinstance(cmd, LogWorkout):
+            reason = await _validate_log_workout(conn, cmd)
+        elif isinstance(cmd, LogWeight):
+            reason = await _validate_log_weight(conn, cmd)
+        elif isinstance(cmd, SetTargets):
+            reason = await _validate_set_targets(
+                conn, cmd, consolidation=consolidation
+            )
         elif isinstance(cmd, CompleteCommitment):
             reason = await _validate_complete(conn, cmd)
         elif isinstance(cmd, SnoozeCommitment):

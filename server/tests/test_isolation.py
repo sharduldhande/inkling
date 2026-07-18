@@ -96,6 +96,36 @@ async def commitments_factory(conn, row_user):
     await _mk_commitment(conn, row_user)
 
 
+async def intake_factory(conn, row_user):
+    await conn.execute(
+        """
+        INSERT INTO intake (user_id, occurred_at, note, kcal)
+        VALUES (%s, now(), 'isolation probe meal', 500)
+        """,
+        (row_user,),
+    )
+
+
+async def workouts_factory(conn, row_user):
+    await conn.execute(
+        """
+        INSERT INTO workouts (user_id, occurred_at, activity_type, duration_min)
+        VALUES (%s, now(), 'running', 30)
+        """,
+        (row_user,),
+    )
+
+
+async def body_metrics_factory(conn, row_user):
+    await conn.execute(
+        """
+        INSERT INTO body_metrics (user_id, occurred_at, kind, value, unit)
+        VALUES (%s, now(), 'weight', 80, 'kg')
+        """,
+        (row_user,),
+    )
+
+
 async def commitment_occurrences_factory(conn, row_user):
     commitment_id = await _mk_commitment(conn, row_user)
     await conn.execute(
@@ -195,6 +225,9 @@ TABLE_FACTORIES = {
     "habits": habits_factory,
     "commitments": commitments_factory,
     "commitment_occurrences": commitment_occurrences_factory,
+    "intake": intake_factory,
+    "workouts": workouts_factory,
+    "body_metrics": body_metrics_factory,
     "deliveries": deliveries_factory,
     "docs": docs_factory,
     "transcript": transcript_factory,

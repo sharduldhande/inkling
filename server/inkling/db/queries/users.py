@@ -1,4 +1,6 @@
-"""SQL for users (§4.1). SELECT only by grant — the app never writes this table."""
+"""SQL for users (§4.1). SELECT only by grant, with one exception: SetTargets
+merges the `targets` column via a column-scoped UPDATE grant (see
+queries/health.py, migration 005)."""
 
 from typing import Any
 

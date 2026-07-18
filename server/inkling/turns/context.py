@@ -28,6 +28,7 @@ from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import docs as docs_q
 from inkling.db.queries import events as events_q
 from inkling.db.queries import facts as facts_q
+from inkling.db.queries import health as health_q
 from inkling.db.queries import transcript as transcript_q
 from inkling.db.queries import users as users_q
 from inkling.prompts.system import SYSTEM_PROMPT
@@ -196,6 +197,10 @@ async def assemble_context(
             conn, start=day_start, end=day_start + timedelta(days=1),
             limit=TODAY_EVENTS_LIMIT,
         )
+        health_today = await health_q.today_summary(
+            conn, user_id=user_id, start=day_start
+        )
+        targets = user.get("targets") or {}
         streaks = await events_q.streaks(
             conn, timezone=user["timezone"], week_start=now - timedelta(days=7)
         )
@@ -279,6 +284,23 @@ async def assemble_context(
         today_lines.append(
             f"- measurements: {len(measurements)} logged today (use recall for detail)"
         )
+    # Health lives in its own typed tables; one aggregate line keeps the model
+    # aware without crowding every turn with breakfasts (detail via recall).
+    if health_today["meals"] or health_today["exercise_min"]:
+        bits = []
+        if health_today["meals"]:
+            bits.append(
+                f"{health_today['meals']} meals, "
+                f"{round(health_today['kcal'])} kcal, "
+                f"{round(health_today['protein_g'])} g protein"
+            )
+            if targets.get("kcal_quota"):
+                bits.append(f"kcal quota {targets['kcal_quota']}")
+            if targets.get("protein_quota_g"):
+                bits.append(f"protein quota {targets['protein_quota_g']} g")
+        if health_today["exercise_min"]:
+            bits.append(f"{round(health_today['exercise_min'])} min exercise")
+        today_lines.append(f"- food/exercise: {'; '.join(bits)} (recall for detail)")
     streak_lines = [
         f"- {s['id']} ({s['title']}): "
         + (f"last done {_local(s['last_done'], tz)}" if s["last_done"] else "never done")

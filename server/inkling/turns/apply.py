@@ -24,6 +24,7 @@ from inkling.db.queries import deliveries as deliveries_q
 from inkling.db.queries import docs as docs_q
 from inkling.db.queries import events as events_q
 from inkling.db.queries import facts as facts_q
+from inkling.db.queries import health as health_q
 from inkling.db.queries import wakeups as wakeups_q
 from inkling.turns.commands import (
     AppendEvent,
@@ -31,8 +32,12 @@ from inkling.turns.commands import (
     Command,
     CompleteCommitment,
     CreateCalendarEvent,
+    LogMeal,
+    LogWeight,
+    LogWorkout,
     Notify,
     ScheduleWakeup,
+    SetTargets,
     SnoozeCommitment,
     UpdateDoc,
     UpdateWorkingState,
@@ -68,6 +73,148 @@ async def _apply_append_event(
         turn_id=turn_id,
     )
     return {"event_id": int(row["id"])}
+
+
+async def _enqueue_healthkit(
+    conn: AsyncConnection,
+    *,
+    user_id: str,
+    turn_id: int,
+    index: int,
+    sample: dict[str, Any],
+) -> None:
+    """Mirror a chat-logged health row to Apple Health via the outbox.
+
+    channel='healthkit' rows are PULLED by the iOS app (GET /healthkit/pending
+    + ack), never pushed: the §11 drainer's due-scan excludes the channel,
+    because a phone has no endpoint to push to. Same idempotency shape as
+    Notify, so a replayed turn mirrors each sample at most once. Until the app
+    ships its drain (Phase C) these rows simply accumulate as 'queued', which
+    is the honest representation of "not yet in Apple Health".
+    """
+    await deliveries_q.enqueue(
+        conn,
+        user_id=user_id,
+        channel="healthkit",
+        destination="healthkit",
+        body=json.dumps(sample, default=str),
+        idempotency_key=f"turn:{turn_id}:healthkit:{index}",
+        turn_id=turn_id,
+    )
+
+
+async def _apply_log_meal(
+    conn: AsyncConnection, cmd: LogMeal, *, user_id: str, turn_id: int, index: int
+) -> dict[str, Any]:
+    row = await health_q.insert_intake(
+        conn,
+        user_id=user_id,
+        occurred_at=cmd.occurred_at,
+        note=cmd.note,
+        kcal=cmd.kcal,
+        protein_g=cmd.protein_g,
+        carb_g=cmd.carb_g,
+        fat_g=cmd.fat_g,
+        supersedes_id=cmd.supersedes_id,
+        turn_id=turn_id,
+    )
+    await _enqueue_healthkit(
+        conn,
+        user_id=user_id,
+        turn_id=turn_id,
+        index=index,
+        sample={
+            "kind": "meal",
+            "intake_id": int(row["id"]),
+            "occurred_at": row["occurred_at"].isoformat(),
+            "note": cmd.note,
+            "kcal": cmd.kcal,
+            "protein_g": cmd.protein_g,
+            "carb_g": cmd.carb_g,
+            "fat_g": cmd.fat_g,
+            "supersedes_id": cmd.supersedes_id,
+        },
+    )
+    return {"intake_id": int(row["id"]), "superseded": cmd.supersedes_id}
+
+
+async def _apply_log_workout(
+    conn: AsyncConnection, cmd: LogWorkout, *, user_id: str, turn_id: int, index: int
+) -> dict[str, Any]:
+    row = await health_q.insert_workout(
+        conn,
+        user_id=user_id,
+        occurred_at=cmd.occurred_at,
+        activity_type=cmd.activity_type,
+        duration_min=cmd.duration_min,
+        kcal_burned=cmd.kcal_burned,
+        distance_km=cmd.distance_km,
+        note=cmd.note,
+        turn_id=turn_id,
+    )
+    assert row is not None  # chat rows carry no source_ref, so no conflict path
+    await _enqueue_healthkit(
+        conn,
+        user_id=user_id,
+        turn_id=turn_id,
+        index=index,
+        sample={
+            "kind": "workout",
+            "workout_id": int(row["id"]),
+            "occurred_at": row["occurred_at"].isoformat(),
+            "activity_type": cmd.activity_type,
+            "duration_min": cmd.duration_min,
+            "kcal_burned": cmd.kcal_burned,
+            "distance_km": cmd.distance_km,
+        },
+    )
+    return {"workout_id": int(row["id"])}
+
+
+async def _apply_log_weight(
+    conn: AsyncConnection, cmd: LogWeight, *, user_id: str, turn_id: int, index: int
+) -> dict[str, Any]:
+    row = await health_q.insert_body_metric(
+        conn,
+        user_id=user_id,
+        occurred_at=cmd.occurred_at,
+        kind="weight",
+        value=cmd.value,
+        unit=cmd.unit,
+        turn_id=turn_id,
+    )
+    assert row is not None  # chat rows carry no source_ref
+    await _enqueue_healthkit(
+        conn,
+        user_id=user_id,
+        turn_id=turn_id,
+        index=index,
+        sample={
+            "kind": "weight",
+            "metric_id": int(row["id"]),
+            "occurred_at": row["occurred_at"].isoformat(),
+            "value": cmd.value,
+            "unit": cmd.unit,
+        },
+    )
+    return {"metric_id": int(row["id"])}
+
+
+async def _apply_set_targets(
+    conn: AsyncConnection, cmd: SetTargets, *, user_id: str, turn_id: int
+) -> dict[str, Any]:
+    patch = {
+        k: v
+        for k, v in (
+            ("kcal_quota", cmd.kcal_quota),
+            ("protein_quota_g", cmd.protein_quota_g),
+        )
+        if v is not None
+    }
+    row = await health_q.merge_targets(conn, user_id=user_id, patch=json.dumps(patch))
+    if row is None:
+        raise ConcurrentModification("users row invisible mid-turn")  # unreachable
+    return {"targets": row["targets"]}
 
 
 async def _materialize_first_occurrence(
@@ -331,6 +478,20 @@ async def apply_command(
     user_id = user["id"]
     if isinstance(cmd, AppendEvent):
         return await _apply_append_event(conn, cmd, user_id=user_id, turn_id=turn_id)
+    if isinstance(cmd, LogMeal):
+        return await _apply_log_meal(
+            conn, cmd, user_id=user_id, turn_id=turn_id, index=index
+        )
+    if isinstance(cmd, LogWorkout):
+        return await _apply_log_workout(
+            conn, cmd, user_id=user_id, turn_id=turn_id, index=index
+        )
+    if isinstance(cmd, LogWeight):
+        return await _apply_log_weight(
+            conn, cmd, user_id=user_id, turn_id=turn_id, index=index
+        )
+    if isinstance(cmd, SetTargets):
+        return await _apply_set_targets(conn, cmd, user_id=user_id, turn_id=turn_id)
     if isinstance(cmd, UpsertCommitment):
         return await _apply_upsert_commitment(
             conn, cmd, user_id=user_id, turn_id=turn_id

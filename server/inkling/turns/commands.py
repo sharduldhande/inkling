@@ -49,6 +49,75 @@ class AppendEvent(BaseModel):
     occurred_at: datetime | None = None
 
 
+# Health commands write the typed tables (intake / workouts / body_metrics),
+# never events: the schema carries the meaning, so there are no unit-string
+# conventions for a prompt to drift away from.
+
+# HKWorkoutActivityType-compatible names: the app writes chat-logged workouts
+# to Apple Health verbatim from this string, so additions must map to a real
+# HealthKit case.
+WorkoutActivity = Literal[
+    "running",
+    "walking",
+    "cycling",
+    "swimming",
+    "hiking",
+    "rowing",
+    "elliptical",
+    "stairClimbing",
+    "jumpRope",
+    "yoga",
+    "pilates",
+    "coreTraining",
+    "flexibility",
+    "traditionalStrengthTraining",
+    "functionalStrengthTraining",
+    "highIntensityIntervalTraining",
+    "dance",
+    "martialArts",
+    "soccer",
+    "basketball",
+    "tennis",
+    "badminton",
+    "cricket",
+    "other",
+]
+
+
+class LogMeal(BaseModel):
+    type: Literal["LogMeal"]
+    note: str  # what was eaten, the user's words or the model's identification
+    kcal: float | None = None
+    protein_g: float | None = None
+    carb_g: float | None = None
+    fat_g: float | None = None
+    occurred_at: datetime | None = None
+    supersedes_id: int | None = None  # correction: this row replaces that one
+
+
+class LogWorkout(BaseModel):
+    type: Literal["LogWorkout"]
+    activity_type: WorkoutActivity
+    duration_min: float
+    kcal_burned: float | None = None  # model-derived (MET × weight) when possible
+    distance_km: float | None = None
+    note: str | None = None
+    occurred_at: datetime | None = None
+
+
+class LogWeight(BaseModel):
+    type: Literal["LogWeight"]
+    value: float
+    unit: Literal["kg", "lb"]
+    occurred_at: datetime | None = None
+
+
+class SetTargets(BaseModel):
+    type: Literal["SetTargets"]
+    kcal_quota: int | None = None
+    protein_quota_g: int | None = None
+
+
 class UpsertCommitment(BaseModel):
     type: Literal["UpsertCommitment"]
     id: int | None = None
@@ -133,6 +202,10 @@ class UpsertMemoryFact(BaseModel):
 
 Command = Annotated[
     AppendEvent
+    | LogMeal
+    | LogWorkout
+    | LogWeight
+    | SetTargets
     | UpsertCommitment
     | CompleteCommitment
     | SnoozeCommitment

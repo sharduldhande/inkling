@@ -23,6 +23,7 @@ from typing import Any
 
 from inkling.db.client import Database
 from inkling.db.queries import events as events_q
+from inkling.db.queries import health as health_q
 from inkling.db.queries import transcript as transcript_q
 from inkling.inference.gateway import ToolHandler, ToolSchema
 from inkling.turns.validate import estimate_tokens
@@ -115,6 +116,9 @@ async def run_recall(db: Database, user_id: str, args: dict[str, Any]) -> str:
         if query:
             events = await events_q.fts(conn, _fts_query(query), RESULT_LIMIT)
             said = await transcript_q.fts(conn, _fts_query(query), RESULT_LIMIT)
+            health = await health_q.fts(
+                conn, user_id=user_id, query=_fts_query(query), limit=RESULT_LIMIT
+            )
         elif since or until:
             events = await events_q.between(
                 conn,
@@ -123,6 +127,7 @@ async def run_recall(db: Database, user_id: str, args: dict[str, Any]) -> str:
                 limit=RESULT_LIMIT,
             )
             said = []
+            health = []
         else:
             return "recall needs a query or a date range"
 
@@ -147,6 +152,30 @@ async def run_recall(db: Database, user_id: str, args: dict[str, Any]) -> str:
             bits.append(str(row["value_num"]))
         note = f": {row['note']}" if row.get("note") else ""
         lines.append(f"- [{ts.date()}] {' '.join(bits)}{note}")
+    for row in health:
+        if kinds and row["entry"] not in kinds:
+            continue
+        if not _within(row["occurred_at"]):
+            continue
+        if row["entry"] == "meal":
+            nums = [
+                f"{round(row['n1'])} kcal" if row["n1"] is not None else None,
+                f"{round(row['n2'])} g protein" if row["n2"] is not None else None,
+            ]
+            detail = ", ".join(n for n in nums if n)
+            lines.append(
+                f"- [{row['occurred_at'].date()}] meal: {row['note']}"
+                + (f" ({detail})" if detail else "")
+            )
+        else:
+            burned = (
+                f", {round(row['n2'])} kcal" if row["n2"] is not None else ""
+            )
+            note = f": {row['note']}" if row["note"] else ""
+            lines.append(
+                f"- [{row['occurred_at'].date()}] workout: {row['label']} "
+                f"{round(row['n1'])} min{burned}{note}"
+            )
     for row in said:
         if kinds:
             continue  # kinds filters to events only
