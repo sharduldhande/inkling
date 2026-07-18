@@ -250,6 +250,31 @@ async def test_consolidation_turn_gets_its_own_prompt_and_day_context(db: Databa
     assert "## Working state (current)\n- essay draft" in call["context"]
 
 
+async def test_consolidation_turn_can_recall_beyond_its_24h_window(db: Database):
+    """The prompt tells it to; the plumbing must actually deliver (recall
+    handlers are wired per turn regardless of trigger source)."""
+    async with db.with_tenant(USER_A) as conn:
+        await conn.execute(
+            "INSERT INTO events (user_id, occurred_at, kind, habit_id, note) "
+            "VALUES (%s, now() - interval '6 days', 'habit_done', 'gym', 'lifted heavy')",
+            (USER_A,),
+        )
+    await ingress.submit(
+        db, user_id=USER_A, source="job",
+        payload={"job": "consolidate", "text": "nightly"},
+    )
+    gateway = StubGateway(
+        reply="digest updated", recalls=[{"query": "gym lifted"}]
+    )
+
+    assert await Worker(db, USER_A, gateway).tick() is True
+
+    assert gateway.calls[0]["system"] == CONSOLIDATION_PROMPT
+    assert "recall" in CONSOLIDATION_PROMPT  # the instruction exists
+    [result] = gateway.calls[0]["recall_results"]
+    assert "lifted heavy" in result  # a 6-day-old event, outside the window
+
+
 async def test_over_cap_working_state_leads_to_a_consolidation_turn(db: Database):
     """§8 enqueues the job; the worker then runs it with the §13.1 prompt."""
     async with db.with_tenant(USER_A) as conn:
