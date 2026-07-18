@@ -122,8 +122,10 @@ def cmd_transcript(args: argparse.Namespace) -> None:
                     continue
                 entry = json.loads(line)
                 conn.execute(
+                    # v1 stores ts as epoch milliseconds (stringified);
+                    # transcript.ts is timestamptz.
                     "INSERT INTO transcript (user_id, ts, role, text) "
-                    "VALUES (%s, %s, %s, %s)",
+                    "VALUES (%s, to_timestamp(%s::bigint / 1000.0), %s, %s)",
                     (
                         args.user,
                         entry.get("ts") or entry.get("timestamp"),
