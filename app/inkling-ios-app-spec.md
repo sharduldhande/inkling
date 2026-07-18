@@ -551,11 +551,13 @@ Two tiles side by side, then a weight chip:
 
 ### B6.2 Activity heatmaps (GitHub-style, side by side)
 
-Two 7-row × 12-column grids sharing one week alignment, labels "Calories"
-and "Exercise" above each. Cells are the 84 `days` rows, column-major:
-rows Monday (top) → Sunday (bottom), oldest week leftmost. The `days` span
-is 84 days ending today, so the first/last columns may be partial — cells
-outside the span render as empty space (clear, no border).
+Two 7-row × 10-column grids sharing one week alignment, labels "Calories"
+and "Exercise" above each, 12pt cells with 4pt gaps. Cells come from the
+`days` rows (the server sends 84; the grid shows the most recent ~10
+Monday-aligned weeks — fewer, larger cells beat 12 cramped columns),
+column-major: rows Monday (top) → Sunday (bottom), oldest week leftmost.
+The last column may be partial — cells after today render as empty space
+(clear, no border).
 
 - **Calories cell colors**: `logged == false` → red; `logged` and
   `kcal <= kcal_quota` → green; `kcal > kcal_quota` → yellow/orange.

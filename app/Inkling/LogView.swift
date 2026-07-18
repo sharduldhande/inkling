@@ -196,9 +196,9 @@ private struct HeatmapsView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.headline)
-            HStack(spacing: 3) {
-                ForEach(0..<12, id: \.self) { column in
-                    VStack(spacing: 3) {
+            HStack(spacing: 4) {
+                ForEach(0..<Self.weeks, id: \.self) { column in
+                    VStack(spacing: 4) {
                         ForEach(0..<7, id: \.self) { row in
                             let slot = column * 7 + row
                             let value = alignedCells[slot]
@@ -223,20 +223,23 @@ private struct HeatmapsView: View {
         days.firstIndex { $0.logged || $0.exercised }
     }
 
+    static let weeks = 10
+    private static var cellCount: Int { weeks * 7 }
+
     private var alignedCells: [(day: DaySummary, index: Int)?] {
         guard let last = days.last,
               let lastDate = Self.dayFormatter.date(from: last.date) else {
-            return Array(repeating: nil, count: 84)
+            return Array(repeating: nil, count: Self.cellCount)
         }
         let calendar = Self.utcCalendar
         let mondayRow = (calendar.component(.weekday, from: lastDate) + 5) % 7
-        guard let start = calendar.date(byAdding: .day, value: -(mondayRow + 77), to: lastDate) else {
-            return Array(repeating: nil, count: 84)
+        guard let start = calendar.date(byAdding: .day, value: -(mondayRow + (Self.weeks - 1) * 7), to: lastDate) else {
+            return Array(repeating: nil, count: Self.cellCount)
         }
         let indexed = Dictionary(uniqueKeysWithValues: days.enumerated().map {
             ($0.element.date, (day: $0.element, index: $0.offset))
         })
-        return (0..<84).map { offset in
+        return (0..<Self.cellCount).map { offset in
             guard let date = calendar.date(byAdding: .day, value: offset, to: start) else { return nil }
             return indexed[Self.dayFormatter.string(from: date)]
         }
@@ -297,14 +300,14 @@ private struct HeatmapCell: View {
     }
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 2)
+        RoundedRectangle(cornerRadius: 3)
             .fill(fill)
-            .frame(width: 8, height: 8)
+            .frame(width: 12, height: 12)
             .overlay {
                 if isToday {
-                    RoundedRectangle(cornerRadius: 3)
+                    RoundedRectangle(cornerRadius: 4)
                         .stroke(.primary, lineWidth: 1.5)
-                        .padding(-1)
+                        .padding(-1.5)
                 }
             }
     }
