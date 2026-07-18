@@ -208,7 +208,8 @@ private struct HeatmapsView: View {
                                 firstDataIndex: firstDataIndex,
                                 todayID: days.last?.date,
                                 kcalQuota: kcalQuota,
-                                mode: mode
+                                mode: mode,
+                                gridIsEmpty: days.isEmpty
                             )
                         }
                     }
@@ -269,6 +270,7 @@ private struct HeatmapCell: View {
     let todayID: String?
     let kcalQuota: Double?
     let mode: HeatmapMode
+    let gridIsEmpty: Bool
 
     private var isToday: Bool {
         guard let day, let todayID else { return false }
@@ -279,10 +281,10 @@ private struct HeatmapCell: View {
         return originalIndex < firstDataIndex
     }
 
-    private static let unfilled = Color(uiColor: .quaternarySystemFill)
+    private static let unfilled = Color(uiColor: .systemFill)
 
     private var fill: Color {
-        guard let day else { return .clear }
+        guard let day else { return gridIsEmpty ? Self.unfilled : .clear }
         guard !isNeutral else { return Self.unfilled }
         switch mode {
         case .exercise:

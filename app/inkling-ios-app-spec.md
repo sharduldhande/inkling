@@ -563,9 +563,12 @@ outside the span render as empty space (clear, no border).
   a quota). Use asset-catalog colors with light+dark variants; do not use
   raw `Color.red/.green` (they clip in dark mode).
 - **Exercise cell colors**: `exercised == true` → green; false → unfilled
-  (faint `quaternarySystemFill`, no border — a stroked outline reads far
-  too heavy at this cell size). Binary; no red, no yellow — a rest day is
-  not a failure.
+  (`systemFill`, no border — a stroked outline reads far too heavy at this
+  cell size, and fainter fills vanish against the card background). Binary;
+  no red, no yellow — a rest day is not a failure. Both grids sit together
+  in one `secondarySystemBackground` rounded card matching the quota tiles.
+  When `days` is empty (never synced), all 84 cells render as unfilled
+  placeholder dots rather than a blank card.
 - **Neutral prehistory**: cells for dates before the FIRST day with any
   data (`logged || exercised`, scanning oldest→newest across the whole
   span) render unfilled in BOTH grids — the app's birthday must not paint
