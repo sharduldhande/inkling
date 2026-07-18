@@ -49,7 +49,6 @@ struct ChatView: View {
                     }
                     .coordinateSpace(name: "chat-scroll")
                     .scrollDismissesKeyboard(.interactively)
-                    .refreshable { await store.checkHealthAndSync() }
                     .onPreferenceChange(ChatBottomPreferenceKey.self) { bottom in
                         nearBottom = bottom - viewport.size.height < 100
                         if nearBottom { showNewPill = false }

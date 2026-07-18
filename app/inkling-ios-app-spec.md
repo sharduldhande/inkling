@@ -645,9 +645,11 @@ Tapping any row in Today or Log:
   empty or a turn is currently streaming (one in-flight turn at a time,
   client-enforced; the server enforces it too).
 - Keyboard: `.scrollDismissesKeyboard(.interactively)`.
-- Pull-to-refresh: `GET /health`; on success show a transient checkmark +
-  "Inkling online" caption for 2 seconds and then run a history sync; on
-  failure "Inkling unreachable". This is the only health UI.
+- Manual refresh: an `arrow.clockwise` button in the Chat nav bar (next to
+  the gear) — NOT pull-to-refresh, which is unreachable at the top of a
+  long transcript. Tap → `GET /health`; on success show a transient
+  checkmark + "Inkling online" caption for 2 seconds and then run a history
+  sync; on failure "Inkling unreachable". This is the only health UI.
 
 ### B8.2 Message model and states
 
@@ -702,7 +704,7 @@ the prefix rule below.
 
 `ChatStore.syncHistory()` — invoke at exactly these moments: on launch after
 loading the local cache; on every transition to `scenePhase == .active`;
-after pull-to-refresh's health check succeeds; when a queued-poll loop ends
+after the refresh button's health check succeeds; when a queued-poll loop ends
 (§B8.3); 5 seconds after a mid-stream drop (§B8.5). If a stream is in
 flight when a sync would run, DEFER it until the stream completes; deferred
 syncs run once, not queued in multiples. Never mutate the message list

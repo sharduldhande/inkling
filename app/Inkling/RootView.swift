@@ -34,7 +34,17 @@ struct RootView: View {
             NavigationStack {
                 ChatView(store: chatStore)
                     .navigationTitle("Inkling")
-                    .toolbar { settingsToolbar }
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                Task { await chatStore.checkHealthAndSync() }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .accessibilityLabel("Check connection and refresh")
+                        }
+                        settingsToolbar
+                    }
             }
             .tabItem { Label("Chat", systemImage: "message") }
             .tag(Tab.chat)
