@@ -694,7 +694,14 @@ else.
 
 Network failure after the stream opened but before `done`: keep the partial
 text, mark the assistant bubble `incomplete` with footnote "connection
-dropped — reply may be incomplete". Do NOT offer retry (the server finishes
+dropped — reply may be incomplete". Detection must NOT rely on URLSession's
+timeout alone — it resets across app suspensions (seen live: a server
+crash left typing dots animating 6+ minutes and `isTurnInFlight` stuck).
+A watchdog marks the turn incomplete after 90 s with no stream frame, and
+a cold launch demotes any cached `.streaming` message to `incomplete`
+(no task exists behind it). A server crash mid-turn also ends here: the
+server marks the crashed trigger `error` and does not re-run it, so the
+bubble stays incomplete and the user re-asks. Do NOT offer retry (the server finishes
 the turn and commits state server-side; a resend would run a second turn).
 Then schedule ONE history sync 5 seconds later: the completed reply is in
 the transcript by then and reconciliation replaces the partial bubble via

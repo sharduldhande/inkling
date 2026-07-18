@@ -22,10 +22,25 @@ final class ChatStore {
     @ObservationIgnored private var queuedPollTask: Task<Void, Never>?
     @ObservationIgnored private var incompleteSyncTask: Task<Void, Never>?
     @ObservationIgnored private var healthCaptionTask: Task<Void, Never>?
+    @ObservationIgnored private var streamTask: Task<Void, Never>?
+    @ObservationIgnored private var watchdogTask: Task<Void, Never>?
+    @ObservationIgnored private var lastFrameAt = Date()
+
+    /// No stream frame for this long → the turn is presumed lost (URLSession's
+    /// own timeout resets across app suspensions, so it alone is not enough —
+    /// seen live as a bubble that kept its typing dots for 6+ minutes after a
+    /// server crash, with isTurnInFlight stuck blocking all sends).
+    private static let stallSeconds: TimeInterval = 90
 
     init(settings: AppSettings) {
         self.settings = settings
-        messages = Array((CacheFiles.load([ChatMessage].self, named: CacheFiles.chat) ?? []).suffix(200))
+        var cached = Array((CacheFiles.load([ChatMessage].self, named: CacheFiles.chat) ?? []).suffix(200))
+        // A cold launch has no task behind any in-flight state: a cached
+        // .streaming bubble would show typing dots forever.
+        for i in cached.indices where cached[i].state == .streaming {
+            cached[i].state = .incomplete
+        }
+        messages = cached
     }
 
     func setPrefill(_ text: String) {
@@ -134,9 +149,22 @@ final class ChatStore {
         )
         messages.append(assistant)
         isTurnInFlight = true
+        lastFrameAt = Date()
         persist()
 
-        Task {
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard let self, !Task.isCancelled else { return }
+                if self.isTurnInFlight, Date().timeIntervalSince(self.lastFrameAt) > Self.stallSeconds {
+                    self.streamTask?.cancel()
+                    return
+                }
+            }
+        }
+
+        streamTask = Task {
             var receivedDone = false
             var receivedServerError = false
             let stream = settings.client().streamChat(message: user.text) { [weak self] in
@@ -144,6 +172,7 @@ final class ChatStore {
             }
             do {
                 for try await event in stream {
+                    lastFrameAt = Date()
                     guard let assistantIndex = messages.firstIndex(where: { $0.localID == assistant.localID }) else { continue }
                     switch event {
                     case .text(let chunk):
@@ -202,6 +231,9 @@ final class ChatStore {
     private func finishPost(_ userID: UUID) {
         openedRequests.remove(userID)
         isTurnInFlight = false
+        watchdogTask?.cancel()
+        watchdogTask = nil
+        streamTask = nil
         persist()
         if syncDeferred {
             syncDeferred = false
