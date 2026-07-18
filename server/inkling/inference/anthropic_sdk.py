@@ -172,9 +172,14 @@ class AnthropicSDKGateway:
         if not emitted:
             log.warning("model never called emit_commands; treating as no commands")
 
+        notes: list[str] = []
+        commands = parse_commands(raw_commands, notes=notes)
+        text = "".join(text_parts)
+        if notes:
+            text = (text + "\n\n" + "\n".join(notes)).strip()
         return TurnResult(
-            text="".join(text_parts),
-            commands=parse_commands(raw_commands),
+            text=text,
+            commands=commands,
             model=model_used,
             input_tokens=input_tokens,
             output_tokens=output_tokens,

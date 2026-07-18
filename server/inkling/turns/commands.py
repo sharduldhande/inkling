@@ -222,13 +222,19 @@ Command = Annotated[
 _command_adapter: TypeAdapter[Command] = TypeAdapter(Command)
 
 
-def parse_commands(raw: Any) -> list[Command]:
+def parse_commands(raw: Any, *, notes: list[str] | None = None) -> list[Command]:
     """Validate the model's raw `commands` array, dropping what doesn't parse.
 
     §7: missing/invalid JSON means "no commands", logged — a model that emits
     nonsense produces a turn with fewer commands, never a failed turn. Per-item
     rather than all-or-nothing, so one malformed command doesn't discard its
     valid siblings.
+
+    A dropped command must not be silent to the user — the model may have
+    claimed success in its prose (seen live: LogWeight with wrong field names
+    dropped here while the reply said "Logged today's weight"). Callers that
+    pass `notes` get one §9.2-style honest line per drop to append to the
+    reply text; the audit log keeps the full validation error either way.
     """
     if raw is None:
         return []
@@ -251,6 +257,14 @@ def parse_commands(raw: Any) -> list[Command]:
             parsed.append(_command_adapter.validate_python(item))
         except ValidationError as exc:
             log.warning("dropping invalid command [%d]: %s", i, exc)
+            if notes is not None:
+                kind = item.get("type", "command") if isinstance(item, dict) else "command"
+                fields = ", ".join(
+                    dict.fromkeys(
+                        str(e["loc"][-1]) for e in exc.errors() if e.get("loc")
+                    )
+                ) or "arguments"
+                notes.append(f"(couldn't complete {kind}: invalid {fields})")
     return parsed
 
 

@@ -63,6 +63,28 @@ def test_invalid_commands_are_dropped_not_fatal():
     assert parsed[0].note == "kept"
 
 
+def test_dropped_commands_surface_honest_notes():
+    """A schema-invalid command must not vanish silently: the model may have
+    claimed success in prose (live bug: LogWeight emitted as weight_kg=90 was
+    dropped while the reply said "Logged today's weight")."""
+    notes: list[str] = []
+    parsed = parse_commands(
+        [
+            {"type": "LogWeight", "weight_kg": 90},  # wrong field names
+            {"type": "AppendEvent", "kind": "note", "note": "kept"},
+        ],
+        notes=notes,
+    )
+
+    assert len(parsed) == 1
+    assert len(notes) == 1
+    assert notes[0].startswith("(couldn't complete LogWeight:")
+    assert "value" in notes[0] and "unit" in notes[0]
+
+    # Without the out-param the behavior is unchanged (40+ call sites).
+    assert len(parse_commands([{"type": "LogWeight", "weight_kg": 90}])) == 0
+
+
 def test_garbage_payloads_mean_no_commands():
     assert parse_commands(None) == []
     assert parse_commands("not json{") == []

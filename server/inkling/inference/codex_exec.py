@@ -73,7 +73,11 @@ def split_reply(raw: str) -> tuple[str, list[Command]]:
         return text, []
     if isinstance(payload, dict):
         payload = payload.get("commands")
-    return text, parse_commands(payload)
+    notes: list[str] = []
+    commands = parse_commands(payload, notes=notes)
+    if notes:
+        text = (text + "\n\n" + "\n".join(notes)).strip()
+    return text, commands
 
 
 class CodexExecGateway:
