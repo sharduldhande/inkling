@@ -146,6 +146,13 @@ class AnthropicSDKGateway:
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock) and block.text:
+                            # Byte-identical repeat of the previous block —
+                            # seen live on every SDK turn (duplicated reply in
+                            # the stream AND the transcript). Mechanical or
+                            # verbatim-restated, the user should see it once.
+                            if text_parts and text_parts[-1] == block.text:
+                                log.debug("skipping duplicate text block")
+                                continue
                             text_parts.append(block.text)
                             await on_text_delta(block.text)
                         elif isinstance(block, ToolUseBlock):
