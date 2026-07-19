@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 from inkling.db.client import Database
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import docs as docs_q
+from inkling.db.queries import documents as documents_q
 from inkling.db.queries import events as events_q
 from inkling.db.queries import facts as facts_q
 from inkling.db.queries import health as health_q
@@ -49,6 +50,7 @@ BUDGETS = {
     "working_state": WORKING_STATE_TOKEN_CAP,  # 1200 hard cap, marker on excess
     "daily_plan": 400,
     "commitments": 400,  # never silently truncated; bounded by row limit below
+    "pending_ingestion": 300,
     "today": 300,
     "transcript": 800,
     "episodes": 400,
@@ -204,6 +206,7 @@ async def assemble_context(
         streaks = await events_q.streaks(
             conn, timezone=user["timezone"], week_start=now - timedelta(days=7)
         )
+        pending_docs = await documents_q.unconfirmed(conn)
         tail = await transcript_q.tail(conn, TRANSCRIPT_TAIL)
         episodes: list[tuple[str, dict[str, Any]]] = []
         if retrieve:
@@ -274,6 +277,31 @@ async def assemble_context(
     else:
         commitments_body = "(none)"
     sections.append(("commitments", "## Commitments (due / upcoming)", commitments_body))
+
+    # §14: an uploaded document whose proposed schedule the user hasn't
+    # confirmed yet. The section carries the how-to so the system prompt
+    # doesn't have to spend its budget on a flow that's usually absent.
+    if pending_docs:
+        lines = [
+            f"- '{d['title']}' (document_id {d['id']}, uploaded "
+            f"{_local(d['created_at'], tz)})"
+            for d in pending_docs
+        ]
+        lines.append(
+            "A schedule was proposed for these in conversation. If the user "
+            "confirms, emit the full batch NOW in one turn: UpsertCommitment "
+            "per dated obligation (lead_time where time-of-day matters), "
+            "day-keyed pacing notes if proposed (AppendEvent kind='note', "
+            "occurred_at that day 06:00 local, under 240 chars each), and one "
+            "AppendEvent kind='ingestion' with the document_id — that marker "
+            "records the confirmation. If they ask for changes, adjust and "
+            "re-propose; if they decline, no marker."
+        )
+        sections.append((
+            "pending_ingestion", "## Pending ingestion (awaiting confirmation)",
+            _clip_lines(lines, BUDGETS["pending_ingestion"],
+                        "[trimmed to budget]", drop_head=False),
+        ))
 
     # Measurements (food, weight, exercise numbers) are memory, not ambient
     # context: they'd crowd every turn with breakfasts. One aggregate line

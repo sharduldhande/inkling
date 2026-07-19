@@ -33,6 +33,7 @@ from inkling.turns.commands import (
 )
 from inkling.turns.commit import commit_turn
 from inkling.turns.context import assemble_context
+from inkling.turns.ingestion import assemble_ingestion_context, is_ingestion_trigger
 from inkling.turns.recall import make_recall_handler, recall_tool
 from inkling.turns.stream import StreamEvent
 
@@ -286,6 +287,10 @@ class Worker:
         """
         if is_consolidation_trigger(trigger):
             assembled = await assemble_consolidation_context(
+                self.db, user_id=self.user_id, trigger=trigger
+            )
+        elif is_ingestion_trigger(trigger):
+            assembled = await assemble_ingestion_context(
                 self.db, user_id=self.user_id, trigger=trigger
             )
         else:

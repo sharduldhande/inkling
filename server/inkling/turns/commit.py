@@ -22,6 +22,7 @@ from inkling.db.queries import turns as turns_q
 from inkling.db.queries import users as users_q
 from inkling.inference.gateway import TurnResult
 from inkling.jobs.consolidate import is_consolidation_trigger
+from inkling.turns.ingestion import is_ingestion_trigger
 from inkling.turns.apply import apply_command
 from inkling.turns.stream import StreamEvent
 from inkling.turns.validate import validate_commands
@@ -90,6 +91,7 @@ async def commit_turn(
             user=user,
             commands=result.commands,
             consolidation=is_consolidation_trigger(trigger),
+            ingestion=is_ingestion_trigger(trigger),
         )
 
         for index, command in enumerate(verdict.accepted):

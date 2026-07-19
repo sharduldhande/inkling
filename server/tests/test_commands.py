@@ -164,13 +164,18 @@ async def test_append_event_applies_and_is_readable(db: Database):
 
 
 async def test_append_event_in_the_future_is_rejected(db: Database):
+    """Non-note kinds record what happened, never what will (§9.2).
+
+    kind='note' is the §14 exception — day-keyed pacing notes are future-
+    dated by design; test_ingestion.py owns that behavior and its caps.
+    """
     verdict = await _validate(
         db,
         USER_A,
         [
             {
                 "type": "AppendEvent",
-                "kind": "note",
+                "kind": "checkin",
                 "note": "will run",
                 "occurred_at": (_now() + timedelta(hours=2)).isoformat(),
             }

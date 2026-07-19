@@ -286,7 +286,7 @@ async def _serve(config: Config, role: str) -> int:
 
         app = create_app(
             db, roster, broker=broker, supervisor=supervisor,
-            calendar_sync=calendar_sync,
+            calendar_sync=calendar_sync, uploads_dir=config.export_git_dir,
         )
         server = uvicorn.Server(
             uvicorn.Config(

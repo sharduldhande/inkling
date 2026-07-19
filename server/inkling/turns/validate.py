@@ -32,6 +32,7 @@ from psycopg import AsyncConnection
 from inkling.db.queries import calendar as calendar_q
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import docs as docs_q
+from inkling.db.queries import documents as documents_q
 from inkling.db.queries import events as events_q
 from inkling.db.queries import health as health_q
 from inkling.db.queries import wakeups as wakeups_q
@@ -50,6 +51,7 @@ from inkling.turns.commands import (
     SnoozeCommitment,
     UpdateDoc,
     UpdateWorkingState,
+    UpsertCommitment,
     UpsertMemoryFact,
 )
 
@@ -88,6 +90,15 @@ WEIGHT_KG_RANGE = (20, 400)
 LB_PER_KG = 2.20462
 TARGET_KCAL_RANGE = (800, 6000)
 TARGET_PROTEIN_RANGE = (20, 400)
+
+# §14 flood caps: a runaway extraction must not be able to bury the user. Per
+# turn — no legitimate conversation creates this many; an ingestion confirm
+# for a dense syllabus stays well inside them. Pacing notes are additionally
+# size-capped so day-keyed rows fit the today-context budget.
+MAX_COMMITMENTS_PER_TURN = 20
+MAX_EVENTS_PER_TURN = 120
+INGESTION_NOTE_TOKEN_CAP = 60
+MAX_PACING_HORIZON = timedelta(days=180)
 
 # Markers that say a working-state line is closed. Deliberately generous: a
 # false "closed" only costs us a guard, a false "open" blocks a legitimate
@@ -178,13 +189,38 @@ async def _validate_append_event(
 ) -> str | None:
     if cmd.occurred_at is not None:
         drift = _aware(cmd.occurred_at) - datetime.now(timezone.utc)
-        if drift > FUTURE_EVENT_TOLERANCE:
+        if drift > FUTURE_EVENT_TOLERANCE and cmd.kind != "note":
             return (
                 f"occurred_at is {int(drift.total_seconds() // 60)} min in the "
                 "future; events record what happened, not what will"
             )
+        if drift > FUTURE_EVENT_TOLERANCE:
+            # §14 pacing notes: kind='note' MAY be day-keyed into the future
+            # ("plan day N/M: ...") so each day's plan surfaces in that day's
+            # "today so far". Bounded in time and size so a runaway batch
+            # can't crowd months of context.
+            if drift > MAX_PACING_HORIZON:
+                return (
+                    "a future-dated note may pace at most "
+                    f"{MAX_PACING_HORIZON.days} days ahead"
+                )
+            if (tokens := estimate_tokens(cmd.note)) > INGESTION_NOTE_TOKEN_CAP:
+                return (
+                    f"a future-dated pacing note must fit the day's context: "
+                    f"~{tokens} tokens, cap {INGESTION_NOTE_TOKEN_CAP}"
+                )
     if cmd.habit_id is not None and await events_q.habit(conn, cmd.habit_id) is None:
         return f"unknown habit '{cmd.habit_id}'"
+    if cmd.document_id is not None:
+        # §14 confirmation marker: kind=ingestion + document_id records the
+        # user's "yes" and sets confirmed_at (apply.py).
+        if cmd.kind != "ingestion":
+            return "document_id only belongs on kind='ingestion' events"
+        doc = await documents_q.get(conn, cmd.document_id)
+        if doc is None:
+            return f"document {cmd.document_id} not found"  # RLS: or not yours
+        if doc["confirmed_at"] is not None:
+            return f"document {cmd.document_id} was already confirmed"
     return None
 
 
@@ -434,17 +470,56 @@ async def validate_commands(
     user: dict[str, Any],
     commands: list[Command],
     consolidation: bool = False,
+    ingestion: bool = False,
 ) -> Validated:
     """Split the model's commands into what may be applied and what may not.
 
     `conn` must already be inside the tenant transaction that will apply the
     accepted commands. `consolidation` is true only for the §13.1 job's turns;
     it unlocks the job-only commands (UpdateDoc, UpsertMemoryFact).
+    `ingestion` is true only for §14 document-ingestion turns, which PROPOSE:
+    every state command is rejected there (Notify excepted — the turn is
+    asynchronous and may ping that the extraction is ready); the batch is
+    emitted from the chat turn where the user confirms.
     """
     accepted: list[Command] = []
     rejected: list[Rejection] = []
+    commitment_count = 0
+    event_count = 0
 
     for cmd in commands:
+        if ingestion and not isinstance(cmd, Notify):
+            rejected.append(Rejection(
+                command=cmd,
+                reason=(
+                    "ingestion turns only propose; emit this after the user "
+                    "confirms in chat"
+                ),
+            ))
+            continue
+        if isinstance(cmd, UpsertCommitment):
+            commitment_count += 1
+            if commitment_count > MAX_COMMITMENTS_PER_TURN:
+                rejected.append(Rejection(
+                    command=cmd,
+                    reason=(
+                        f"over the {MAX_COMMITMENTS_PER_TURN}-commitment "
+                        "per-turn cap; split the batch across turns"
+                    ),
+                ))
+                continue
+        if isinstance(cmd, AppendEvent):
+            event_count += 1
+            if event_count > MAX_EVENTS_PER_TURN:
+                rejected.append(Rejection(
+                    command=cmd,
+                    reason=(
+                        f"over the {MAX_EVENTS_PER_TURN}-event per-turn cap; "
+                        "split the batch across turns"
+                    ),
+                ))
+                continue
+
         if isinstance(cmd, AppendEvent):
             reason = await _validate_append_event(conn, cmd)
         elif isinstance(cmd, LogMeal):

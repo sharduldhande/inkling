@@ -56,6 +56,9 @@ class AppendEvent(_CommandBase):
     unit: str | None = None
     note: str
     occurred_at: datetime | None = None
+    # §14: on kind='ingestion' only — records the user's confirmation of a
+    # proposed document schedule and sets ingested_documents.confirmed_at.
+    document_id: int | None = None
 
 
 # Health commands write the typed tables (intake / workouts / body_metrics),

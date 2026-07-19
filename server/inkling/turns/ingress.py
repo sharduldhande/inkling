@@ -15,9 +15,11 @@ from inkling.db.client import Database
 from inkling.db.queries import triggers as q
 
 # §4.2: 1 chat · 2 occurrence · 3 calendar/wakeup · 4 maintenance.
+# ingestion rides at 2: the user just uploaded and is waiting for the proposal.
 PRIORITY_BY_SOURCE = {
     "chat": 1,
     "occurrence": 2,
+    "ingestion": 2,
     "calendar": 3,
     "wakeup": 3,
     "presence": 3,

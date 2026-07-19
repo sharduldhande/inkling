@@ -414,6 +414,9 @@ async def test_unconfigured_calendar_channel_degrades_honestly(db: Database, dsn
         await deliveries_q.enqueue(
             conn, user_id=USER_A, channel="calendar", destination="primary",
             body="{}", idempotency_key="cal-test-1",
+            # Pin dueness: created_at is DB wall clock, which can sit a few ms
+            # AHEAD of the drainer's local now — the repo-wide gotcha.
+            not_before=datetime.now(timezone.utc) - timedelta(seconds=5),
         )
     drainer = Drainer(db, [USER_A], channel=StubChannel())  # no calendar channel
 

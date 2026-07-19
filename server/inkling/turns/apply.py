@@ -22,6 +22,7 @@ from psycopg import AsyncConnection
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import deliveries as deliveries_q
 from inkling.db.queries import docs as docs_q
+from inkling.db.queries import documents as documents_q
 from inkling.db.queries import events as events_q
 from inkling.db.queries import facts as facts_q
 from inkling.db.queries import health as health_q
@@ -69,10 +70,20 @@ async def _apply_append_event(
         value_num=cmd.value_num,
         unit=cmd.unit,
         note=cmd.note,
-        source="conversation",
+        source=(
+            f"ingestion:{cmd.document_id}"
+            if cmd.document_id is not None else "conversation"
+        ),
         turn_id=turn_id,
     )
-    return {"event_id": int(row["id"])}
+    detail: dict[str, Any] = {"event_id": int(row["id"])}
+    if cmd.document_id is not None:
+        # §14: the ingestion marker doubles as the confirmation record.
+        # Validation checked unconfirmed inside this same transaction, so a
+        # False here is a caught race, not a silent double-confirm.
+        detail["confirmed"] = await documents_q.confirm(conn, cmd.document_id)
+        detail["document_id"] = cmd.document_id
+    return detail
 
 
 async def _enqueue_healthkit(
