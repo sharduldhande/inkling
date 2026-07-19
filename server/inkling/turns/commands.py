@@ -194,8 +194,11 @@ class Notify(_CommandBase):  # rare: extra push beyond the reply
 
 
 class UpdateDoc(_CommandBase):
+    # daily_plan is writable from any turn (the day-start/presence machinery
+    # owns today's plan); patterns and digest7 stay consolidation-only —
+    # validate.py enforces the split.
     type: Literal["UpdateDoc"]
-    kind: Literal["patterns", "digest7"]
+    kind: Literal["patterns", "digest7", "daily_plan"]
     new_content: str
     reason: str
 

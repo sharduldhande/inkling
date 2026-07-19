@@ -59,6 +59,14 @@ _ATTEMPTS = """
 SELECT count(*) AS n FROM turns WHERE trigger_id = %s
 """
 
+# Presence pacing (§10 presence): the clock resets at the end of any turn,
+# whatever its trigger — a chat exchange, a fired reminder, or a presence
+# check-in all count as contact.
+_LAST_FINISHED = """
+SELECT max(finished_at) AS ts FROM turns
+WHERE user_id = %s AND finished_at IS NOT NULL
+"""
+
 _APPEND_EVENT = """
 INSERT INTO turn_events (user_id, turn_id, seq, kind, data)
 VALUES (%s, %s, %s, %s, %s)
@@ -133,6 +141,13 @@ async def attempts(conn: AsyncConnection, trigger_id: int) -> int:
     cur = await conn.execute(_ATTEMPTS, (trigger_id,))
     row = await cur.fetchone()
     return int(row["n"]) if row else 0
+
+
+async def last_finished_at(conn: AsyncConnection, user_id: str) -> Any | None:
+    """When this user's most recent turn finished, or None if none ever has."""
+    cur = await conn.execute(_LAST_FINISHED, (user_id,))
+    row = await cur.fetchone()
+    return row["ts"] if row else None
 
 
 async def append_event(

@@ -342,11 +342,25 @@ async def assemble_context(
                         "[lower-ranked matches omitted]", drop_head=False),
         ))
 
-    sections.append((
-        "trigger", "## Trigger",
-        _clip(format_trigger(trigger), BUDGETS["trigger"],
-              "[trigger text truncated to budget]"),
-    ))
+    # First contact of the day: no conversation since the current local day's
+    # quiet_end. Judged from the transcript, not turns, so a presence turn
+    # that chose silence doesn't count as having opened the day. The flag
+    # tells the model this turn establishes the day's shape (see prompt).
+    quiet_end = user["quiet_end"]
+    day_open = local_now.replace(
+        hour=quiet_end.hour, minute=quiet_end.minute,
+        second=quiet_end.second, microsecond=0,
+    )
+    first_contact = not tail or tail[-1]["ts"].astimezone(tz) < day_open
+
+    trigger_body = _clip(format_trigger(trigger), BUDGETS["trigger"],
+                         "[trigger text truncated to budget]")
+    if first_contact:
+        trigger_body += (
+            "\n[first_contact_of_day: no conversation yet since this "
+            "morning's quiet hours ended — open the day]"
+        )
+    sections.append(("trigger", "## Trigger", trigger_body))
 
     context = "\n\n".join(f"{header}\n{body}" for _, header, body in sections)
     sizes = {name: estimate_tokens(body) for name, _, body in sections}

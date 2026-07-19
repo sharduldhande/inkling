@@ -58,7 +58,11 @@ log = logging.getLogger(__name__)
 # §8.1: working_state is a 1200-token hard cap; patterns and digest7 are
 # capped at their context budgets so an accepted doc always fits its section.
 WORKING_STATE_TOKEN_CAP = 1200
-DOC_TOKEN_CAPS = {"patterns": 600, "digest7": 500}
+DOC_TOKEN_CAPS = {"patterns": 600, "digest7": 500, "daily_plan": 400}
+
+# UpdateDoc kinds any turn may write. daily_plan is the day's shape — the
+# first-contact and presence turns own it; the rest stay consolidation-only.
+TURN_WRITABLE_DOC_KINDS = frozenset({"daily_plan"})
 
 # §9.2: a rewrite that replaces more than this much of the doc is a red flag —
 # the model is discarding state rather than editing it. Consolidation is the
@@ -401,7 +405,7 @@ async def _validate_notify(conn: AsyncConnection, cmd: Notify) -> str | None:
 async def _validate_update_doc(
     conn: AsyncConnection, cmd: UpdateDoc, *, consolidation: bool
 ) -> str | None:
-    if not consolidation:
+    if not consolidation and cmd.kind not in TURN_WRITABLE_DOC_KINDS:
         return f"only the consolidation job may rewrite {cmd.kind}"
     if not cmd.reason.strip():
         return "reason is required"

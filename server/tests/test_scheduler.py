@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import psycopg
+import pytest
 import pytest_asyncio
 
 from inkling.db.client import Database
@@ -290,6 +291,152 @@ async def test_occurrence_defers_per_notify_policy(db: Database):
     await sched.refresh(now=T_QUIET)
     assert await sched.fire_due(now=T_QUIET) == 0  # default policy is "defer"
     assert await sched.fire_due(now=T_QUIET_END) == 1
+
+
+# --- presence (dead-man check-ins) ------------------------------------------
+
+
+def _set_presence(dsn: str, max_gap: str | None, min_gap: str = "45 minutes"):
+    """FORCE RLS applies to the owner too: the tenant must be set to write."""
+    with psycopg.connect(dsn) as conn:
+        conn.execute("BEGIN")
+        conn.execute("SELECT set_config('app.user_id', %s, true)", (USER_A,))
+        cur = conn.execute(
+            "UPDATE users SET presence_max_gap = %s, presence_min_gap = %s "
+            "WHERE id = %s RETURNING id",
+            (max_gap, min_gap, USER_A),
+        )
+        assert cur.fetchone() is not None, "RLS silently swallowed the update"
+        conn.execute("COMMIT")
+
+
+@pytest.fixture
+def presence_user(dsn: str):
+    """Opt USER_A in for one test; users survives TRUNCATE, so always reset."""
+    _set_presence(dsn, "60 minutes")
+    yield
+    _set_presence(dsn, None)
+
+
+async def _seed_finished_turn(db: Database, *, finished_at: datetime) -> None:
+    async with db.with_tenant(USER_A) as conn:
+        cur = await conn.execute(
+            "INSERT INTO triggers (user_id, source, idempotency_key, payload, "
+            "priority, status) VALUES (%s, 'chat', %s, '{}', 1, 'done') "
+            "RETURNING id",
+            (USER_A, f"seed:{finished_at.isoformat()}"),
+        )
+        trigger_id = int((await cur.fetchone())["id"])
+        await conn.execute(
+            "INSERT INTO turns (user_id, trigger_id, status, finished_at) "
+            "VALUES (%s, %s, 'ok', %s)",
+            (USER_A, trigger_id, finished_at),
+        )
+
+
+def _presence_triggers(rows):
+    return [r for r in rows if r["source"] == "presence"]
+
+
+async def test_presence_fires_max_gap_after_the_last_turn(
+    db: Database, presence_user
+):
+    await _seed_finished_turn(db, finished_at=T - timedelta(hours=2))
+    sched = _scheduler(db)
+
+    await sched.refresh(now=T)  # due at last turn + 60 min = T - 1h: past due
+    assert await sched.fire_due(now=T) == 1
+
+    [trig] = _presence_triggers(await _rows(db, USER_A, "SELECT * FROM triggers"))
+    assert trig["priority"] == 3
+    assert trig["payload"]["late"] is True
+    assert trig["idempotency_key"].startswith(f"presence:{USER_A}:")
+
+
+async def test_presence_min_gap_suppresses_at_fire_time(
+    db: Database, presence_user
+):
+    await _seed_finished_turn(db, finished_at=T - timedelta(hours=2))
+    sched = _scheduler(db)
+    await sched.refresh(now=T)
+
+    # A turn finishes between refresh and fire: within the 45-min floor.
+    await _seed_finished_turn(db, finished_at=T - timedelta(minutes=10))
+
+    assert await sched.fire_due(now=T) == 0
+    assert _presence_triggers(await _rows(db, USER_A, "SELECT * FROM triggers")) == []
+
+
+async def test_presence_yields_to_a_queued_trigger(db: Database, presence_user):
+    from inkling.turns import ingress
+
+    await _seed_finished_turn(db, finished_at=T - timedelta(hours=2))
+    sched = _scheduler(db)
+    await sched.refresh(now=T)
+    await ingress.submit(db, user_id=USER_A, source="chat", payload={"text": "hi"})
+
+    assert await sched.fire_due(now=T) == 0
+    assert _presence_triggers(await _rows(db, USER_A, "SELECT * FROM triggers")) == []
+
+
+async def test_null_max_gap_means_presence_off(db: Database):
+    await _seed_finished_turn(db, finished_at=T - timedelta(hours=6))
+    sched = _scheduler(db)
+    await sched.refresh(now=T)
+
+    assert not any(e.kind == "presence" for e in sched._heap)
+
+
+async def test_presence_duplicate_fire_inserts_one_trigger(
+    db: Database, presence_user
+):
+    import heapq as _heapq
+
+    from inkling.scheduler.scheduler import Entry
+
+    await _seed_finished_turn(db, finished_at=T - timedelta(hours=2))
+    sched = _scheduler(db)
+    await sched.refresh(now=T)
+    [entry] = [e for e in sched._heap if e.kind == "presence"]
+    assert await sched.fire_due(now=T) == 1
+
+    # A second scheduler (or rebuilt heap) proposes the same instant. Settle
+    # the first trigger so the busy check isn't what saves us — this is the
+    # idempotency key's own test.
+    async with db.with_tenant(USER_A) as conn:
+        await conn.execute(
+            "UPDATE triggers SET status = 'done' WHERE source = 'presence'"
+        )
+    _heapq.heappush(
+        sched._heap,
+        Entry(entry.fire_at, "presence", USER_A, 0, dict(entry.extra)),
+    )
+    assert await sched.fire_due(now=T) == 0
+    assert len(_presence_triggers(await _rows(db, USER_A, "SELECT * FROM triggers"))) == 1
+
+
+async def test_presence_defers_out_of_quiet_hours(db: Database, presence_user):
+    await _seed_finished_turn(db, finished_at=T_QUIET - timedelta(hours=2))
+    sched = _scheduler(db)
+
+    await sched.refresh(now=T_QUIET)
+    assert await sched.fire_due(now=T_QUIET) == 0  # deferred, not dropped
+    assert await _rows(db, USER_A, "SELECT 1 FROM triggers WHERE source='presence'") == []
+
+    assert await sched.fire_due(now=T_QUIET_END) == 1
+    [trig] = _presence_triggers(await _rows(db, USER_A, "SELECT * FROM triggers"))
+    assert trig["source"] == "presence"
+
+
+async def test_presence_anchors_at_now_for_a_user_with_no_history(
+    db: Database, presence_user
+):
+    sched = _scheduler(db)
+    await sched.refresh(now=T)
+
+    [entry] = [e for e in sched._heap if e.kind == "presence"]
+    assert entry.fire_at == T + timedelta(minutes=60)
+    assert await sched.fire_due(now=T) == 0
 
 
 # --- invalidation (§10) -----------------------------------------------------

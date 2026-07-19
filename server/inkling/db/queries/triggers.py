@@ -161,6 +161,31 @@ async def turn_id_for(conn: AsyncConnection, trigger_id: int) -> int | None:
     return int(row["turn_id"]) if row and row["turn_id"] is not None else None
 
 
+async def last_presence_at(conn: AsyncConnection, user_id: str) -> Any | None:
+    """When the last presence trigger was inserted, or None.
+
+    Counted from insertion, not turn completion, so a presence trigger that is
+    still queued (or errored) already holds the next one off by max_gap.
+    """
+    cur = await conn.execute(
+        "SELECT max(received_at) AS ts FROM triggers "
+        "WHERE user_id = %s AND source = 'presence'",
+        (user_id,),
+    )
+    row = await cur.fetchone()
+    return row["ts"] if row else None
+
+
+async def active_exists(conn: AsyncConnection, user_id: str) -> bool:
+    """True if any trigger for this user is pending or running."""
+    cur = await conn.execute(
+        "SELECT 1 FROM triggers "
+        "WHERE user_id = %s AND status IN ('pending', 'running') LIMIT 1",
+        (user_id,),
+    )
+    return await cur.fetchone() is not None
+
+
 async def pending_count(conn: AsyncConnection, user_id: str) -> int:
     cur = await conn.execute(
         "SELECT count(*) AS n FROM triggers WHERE user_id = %s AND status = 'pending'",

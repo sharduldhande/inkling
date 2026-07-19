@@ -16,7 +16,7 @@ database name lacks a "test" marker.
 
 ```sh
 export TEST_DATABASE_URL=$(neonctl connection-string inkling-test \
-  --project-id broad-sound-43290851 --database-name inkling_test \
+  --project-id example-project-123456 --database-name inkling_test \
   --role-name neondb_owner)
 uv run pytest
 ```

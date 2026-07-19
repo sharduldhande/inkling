@@ -614,6 +614,48 @@ async def test_model_cannot_write_the_goals_doc(db: Database):
     ) == []
 
 
+async def test_daily_plan_is_writable_from_a_normal_turn(db: Database):
+    """The day-start/presence machinery owns today's plan — no job required."""
+    await _run_turn(
+        db,
+        USER_A,
+        [{
+            "type": "UpdateDoc", "kind": "daily_plan",
+            "new_content": "- improv 11:00\n- ship §14 draft",
+            "reason": "first contact: shaped the day",
+        }],
+    )
+    rows = await _rows(
+        db, USER_A, "SELECT * FROM docs WHERE kind = 'daily_plan'"
+    )
+    assert len(rows) == 1
+    assert "improv" in rows[0]["content"]
+
+
+async def test_patterns_doc_stays_consolidation_only(db: Database):
+    verdict = await _validate(
+        db,
+        USER_A,
+        [{
+            "type": "UpdateDoc", "kind": "patterns",
+            "new_content": "rewritten", "reason": "tidying",
+        }],
+    )
+    assert "only the consolidation job" in verdict.rejected[0].reason
+
+
+async def test_daily_plan_respects_its_token_cap(db: Database):
+    verdict = await _validate(
+        db,
+        USER_A,
+        [{
+            "type": "UpdateDoc", "kind": "daily_plan",
+            "new_content": "plan " * 800, "reason": "day shape",
+        }],
+    )
+    assert "over its" in verdict.rejected[0].reason
+
+
 # --- wakeups ----------------------------------------------------------------
 
 

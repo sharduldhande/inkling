@@ -99,8 +99,11 @@ async def test_sections_appear_in_stable_to_volatile_order(db: Database):
     ]
     positions = [got.context.index(h) for h in headers]
     assert positions == sorted(positions)
-    assert got.context.rstrip().endswith(
+    # The trigger body ends the context (bar the first_contact_of_day flag,
+    # which depends on the wall clock and gets its own tests below).
+    assert (
         "User message: what did I say about the essay yesterday?"
+        in got.context[positions[-1]:]
     )
 
 
@@ -330,6 +333,60 @@ async def test_wakeup_trigger_renders_source_ref_and_late_flag(db: Database):
     )
 
 
+# --- first contact of the day -----------------------------------------------
+
+
+def _set_quiet_end(dsn: str, user_id: str, quiet_end: str) -> None:
+    """FORCE RLS applies to the owner too: the tenant must be set to write."""
+    with psycopg.connect(dsn) as conn:
+        conn.execute("BEGIN")
+        conn.execute("SELECT set_config('app.user_id', %s, true)", (user_id,))
+        cur = conn.execute(
+            "UPDATE users SET quiet_end = %s WHERE id = %s RETURNING id",
+            (quiet_end, user_id),
+        )
+        assert cur.fetchone() is not None, "RLS silently swallowed the update"
+        conn.execute("COMMIT")
+
+
+@pytest_asyncio.fixture
+async def midnight_quiet_end(dsn: str):
+    """quiet_end 00:00 makes the day-open boundary local midnight, so 'today'
+    vs 'before today' is deterministic whatever wall-clock time the suite runs."""
+    _set_quiet_end(dsn, USER_A, "00:00")
+    yield
+    _set_quiet_end(dsn, USER_A, "11:59")
+
+
+async def test_first_contact_flag_set_when_no_conversation_today(
+    db: Database, midnight_quiet_end
+):
+    await _seed_transcript(
+        db, USER_A, "assistant", "good night", ts=NOW - timedelta(days=2)
+    )
+    got = await assemble_context(
+        db, user_id=USER_A,
+        trigger=_trigger(source="presence", text="Scheduled check-in."),
+    )
+    assert "first_contact_of_day" in got.context
+    assert "[presence trigger] Scheduled check-in." in got.context
+
+
+async def test_first_contact_flag_set_on_an_empty_transcript(
+    db: Database, midnight_quiet_end
+):
+    got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
+    assert "first_contact_of_day" in got.context
+
+
+async def test_first_contact_flag_clears_after_todays_first_exchange(
+    db: Database, midnight_quiet_end
+):
+    await _seed_transcript(db, USER_A, "user", "morning")  # ts = now: today
+    got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
+    assert "first_contact_of_day" not in got.context
+
+
 async def test_worker_passes_assembled_context_to_the_gateway(db: Database):
     await _seed_doc(db, USER_A, "goals", "Ship Inkling.")
     await ingress.submit(db, user_id=USER_A, source="chat", payload={"text": "hi"})
@@ -340,7 +397,7 @@ async def test_worker_passes_assembled_context_to_the_gateway(db: Database):
 
     call = gateway.calls[0]
     assert "## Goals\nShip Inkling." in call["context"]
-    assert call["context"].rstrip().endswith("User message: hi")
+    assert "User message: hi" in call["context"]
     assert "## Commitments (due / upcoming)" in call["context"]
 
 

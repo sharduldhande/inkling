@@ -4,7 +4,8 @@ State is an in-memory min-heap of (fire_at, kind, user_id, id) rebuilt from the
 database on every horizon refresh: pending occurrences and active wakeups
 within the next 48 h — with no lower bound, so past-due rows load on boot and
 fire immediately, flagged `late` (catch-up; nothing is dropped). Occurrence
-materialization piggybacks on the refresh.
+materialization piggybacks on the refresh, as does the per-user presence
+entry (dead-man check-in: last contact + presence_max_gap, when opted in).
 
 Every fire is a database compare-and-set (pending→eligible, active→fired,
 fire_at advance) plus a trigger insert with a natural idempotency key, in one
@@ -42,6 +43,7 @@ from zoneinfo import ZoneInfo
 from inkling.db.client import Database
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import triggers as triggers_q
+from inkling.db.queries import turns as turns_q
 from inkling.db.queries import users as users_q
 from inkling.db.queries import wakeups as wakeups_q
 from inkling.scheduler.occurrences import materialize_user, next_instance
@@ -66,7 +68,7 @@ JOB_CATCHUP = timedelta(hours=6)
 @dataclass(order=True)
 class Entry:
     fire_at: datetime
-    kind: str  # "occurrence" | "wakeup" | "job"
+    kind: str  # "occurrence" | "wakeup" | "job" | "presence"
     user_id: str
     ref_id: int  # 0 for jobs: nothing in the DB to point at
     # Everything a fire needs beyond the key, loaded at refresh. db_fire_at is
@@ -221,6 +223,15 @@ class Scheduler:
                                 "respect_quiet": wk["respect_quiet"],
                             },
                         ))
+                    presence_at = await self._next_presence(conn, user_id, user, now)
+                    if presence_at is not None:
+                        heap.append(Entry(
+                            fire_at=presence_at,
+                            kind="presence",
+                            user_id=user_id,
+                            ref_id=0,  # like jobs: no DB row to point at
+                            extra={"db_fire_at": presence_at},
+                        ))
                     job_at = self._next_consolidation(now, tz)
                     if job_at is not None:
                         heap.append(Entry(
@@ -257,6 +268,29 @@ class Scheduler:
         if local - candidate <= JOB_CATCHUP:
             return candidate
         return candidate + timedelta(days=1)
+
+    async def _next_presence(
+        self, conn: Any, user_id: str, user: dict[str, Any], now: datetime
+    ) -> datetime | None:
+        """The dead-man check-in time: last contact + presence_max_gap.
+
+        Contact is the later of the last finished turn (any source — a chat
+        exchange, a fired reminder, a presence turn) and the last presence
+        trigger *insertion* (so a queued or errored check-in still holds the
+        next one off). A user with no history anchors at now: the clock starts
+        at boot, not in the past. NULL max_gap means presence is off.
+
+        A model-scheduled wakeup inside the gap does NOT suppress this entry —
+        when that wakeup fires, its turn resets the clock, and the fire path's
+        busy check covers the overlap window.
+        """
+        max_gap = user["presence_max_gap"]
+        if max_gap is None:
+            return None
+        last_turn = await turns_q.last_finished_at(conn, user_id)
+        last_presence = await triggers_q.last_presence_at(conn, user_id)
+        contacts = [t for t in (last_turn, last_presence) if t is not None]
+        return (max(contacts) if contacts else now) + max_gap
 
     async def _materialize_wakeup(
         self, conn: Any, wakeup: dict[str, Any], now: datetime
@@ -295,6 +329,8 @@ class Scheduler:
                     ok = await self._fire_wakeup(entry, now)
                 elif entry.kind == "job":
                     ok = await self._fire_job(entry, now)
+                elif entry.kind == "presence":
+                    ok = await self._fire_presence(entry, now)
                 else:
                     ok = await self._fire_occurrence(entry, now)
             except Exception:
@@ -314,6 +350,9 @@ class Scheduler:
 
         Wakeups defer per their respect_quiet flag; occurrences per notify
         policy ("defer" and, for now, "silent_summary" — see module docstring).
+        Presence always defers: a check-in during sleep is exactly what quiet
+        hours exist to prevent, and deferring to quiet_end is what makes the
+        first fire past quiet the day-opening contact.
         Jobs never defer: consolidation at 02:30 is silent maintenance — quiet
         hours exist to protect sleep from pushes, not the DB from writes.
         Landing exactly at quiet_end can't re-defer: the window is [start, end).
@@ -401,6 +440,46 @@ class Scheduler:
                     "late": self._late(entry, now),
                 }),
                 priority=PRIORITY_BY_SOURCE["job"],
+            )
+        return row is not None
+
+    async def _fire_presence(self, entry: Entry, now: datetime) -> bool:
+        """Synthesize a check-in trigger unless the user was just in contact.
+
+        Fire-time suppression re-checks the world instead of trusting the
+        heap (CAS-style, like everything else here): skip if a turn finished
+        within presence_min_gap — the floor: ping an hour after the last
+        chat, not on top of it — or if any trigger is pending/running, since
+        that contact will reset the clock at the next refresh. The 5-minute
+        floor on the idempotency key makes two schedulers proposing the same
+        check-in insert one trigger.
+        """
+        user = self._users[entry.user_id]
+        async with self.db.with_tenant(entry.user_id) as conn:
+            last_turn = await turns_q.last_finished_at(conn, entry.user_id)
+            if last_turn is not None and now - last_turn < user["presence_min_gap"]:
+                return False
+            if await triggers_q.active_exists(conn, entry.user_id):
+                return False
+            key_at = entry.extra["db_fire_at"].astimezone(timezone.utc)
+            key_at = key_at.replace(
+                minute=key_at.minute - key_at.minute % 5, second=0, microsecond=0
+            )
+            row = await triggers_q.insert(
+                conn,
+                user_id=entry.user_id,
+                source="presence",
+                source_ref=None,
+                idempotency_key=f"presence:{entry.user_id}:{key_at.isoformat()}",
+                payload=json.dumps({
+                    "text": (
+                        "Scheduled check-in — nothing specific fired. Decide "
+                        "the single most valuable contact right now, or stay "
+                        "silent."
+                    ),
+                    "late": self._late(entry, now),
+                }),
+                priority=PRIORITY_BY_SOURCE["presence"],
             )
         return row is not None
 

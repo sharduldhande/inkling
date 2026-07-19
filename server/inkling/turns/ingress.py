@@ -20,6 +20,7 @@ PRIORITY_BY_SOURCE = {
     "occurrence": 2,
     "calendar": 3,
     "wakeup": 3,
+    "presence": 3,
     "job": 4,
 }
 
