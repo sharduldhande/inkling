@@ -466,7 +466,30 @@ whole response; dispatch UI updates to the MainActor as chunks arrive.
   (clamped at display time, §B6) and the per-cell color mapping. All other
   arithmetic already happened server-side.
 
-### B3g. Endpoints that exist but which this app must NOT use
+### B3g. `POST /documents` (document ingestion, §14)
+
+Two request shapes, one endpoint. Auth: same bearer header as everything.
+
+```
+multipart/form-data with one part named "file" (the PDF bytes; filename kept)
+→ 202 {"document_id": 7, "title": "ISyE_syllabus.pdf", "status": "queued"}
+
+application/json {"url": "https://leetcode.com/studyplan/top-interview-150/"}
+→ 202 {"document_id": 8, "title": "Top Interview 150", "status": "queued"}
+```
+
+Errors: `401` unauthorized; `400` malformed body (missing `file` part /
+`url` key); `413` file over 15MB; `415` other content types; `422` with
+`{"error": "<reason>"}` when extraction fails (scanned/unreadable PDF,
+unfetchable URL) — show `error` verbatim in the failed bubble.
+
+202 means QUEUED, exactly like the chat 429 flow (§B8.3): the server runs
+an asynchronous ingestion turn whose reply (the proposed schedule) arrives
+via normal history sync as an assistant message. The app never resends on
+202, never polls the document id, and gets no SSE for this — after a 202,
+schedule a history sync a few seconds out and let §B8.6 do the rest.
+
+### B3h. Endpoints that exist but which this app must NOT use
 
 `GET /turns/{id}/events` (stream replay) — the live SSE stream never emits
 `id:` fields, so the client never learns a turn id or sequence number and
@@ -739,6 +762,29 @@ merge (implement exactly):
    (§B5 policy).
 
 Synced-in messages obey the auto-scroll rule (§B8.1).
+
+### B8.7 Document attach (paperclip)
+
+A paperclip button sits left of the text field in the chat input bar, same
+glass treatment as the send button (§B2).
+
+- Tap → `.fileImporter` restricted to `UTType.pdf`. On pick, POST the bytes
+  as `multipart/form-data` to `/documents` (§B3g).
+- Long-press → an alert with a single text field, title "Ingest a web
+  page", prefilled from the pasteboard when it holds an http(s) URL. Submit
+  → JSON `{"url": ...}` to the same endpoint.
+- On send, append a local user bubble `[document: <name-or-url>]` in state
+  `sending`. On 202 → state `sent` (it will NOT be healed by history sync —
+  the server transcript has no matching user line — so it keeps its local
+  ts and stays; exempt it from §B8.6 step 2 matching by giving it a
+  synthetic `serverID` of `"doc-<document_id>"`). On 4xx/422 → state
+  `failed` with the server's `error` string underneath, tap to retry.
+- After a 202, trigger a history sync after 5 s and again after 20 s (the
+  extraction turn takes model-inference time); the proposal bubble arrives
+  as a normal assistant message. No SSE, no polling loop.
+- The proposal asks the user to confirm — that's just typing in chat.
+  Nothing else in the app changes; commitments appear on the Today pane via
+  the ordinary refresh after the user confirms.
 
 ## B9. SettingsSheet (modal sheet; the only screen outside the tabs)
 
