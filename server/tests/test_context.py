@@ -26,7 +26,8 @@ async def clean(migrated: str, dsn: str):
         conn.execute(
             "TRUNCATE turn_events, turns, triggers, transcript, audit_log, "
             "events, docs, commitment_occurrences, commitments, habits, "
-            "memory_facts RESTART IDENTITY CASCADE"
+            "memory_facts, scheduled_wakeups, ingested_documents "
+            "RESTART IDENTITY CASCADE"
         )
         conn.commit()
     yield
@@ -385,6 +386,42 @@ async def test_first_contact_flag_clears_after_todays_first_exchange(
     await _seed_transcript(db, USER_A, "user", "morning")  # ts = now: today
     got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
     assert "first_contact_of_day" not in got.context
+
+
+@pytest_asyncio.fixture
+async def late_quiet_end(dsn: str):
+    """quiet_end just before midnight puts 'now' BEFORE today's boundary all
+    day, so the most-recent-boundary rule is what keeps the flag honest."""
+    _set_quiet_end(dsn, USER_A, "23:59:59")
+    yield
+    _set_quiet_end(dsn, USER_A, "11:59")
+
+
+async def test_midnight_is_not_a_new_day(db: Database, late_quiet_end):
+    """Regression: a conversation minutes ago, with today's quiet_end still
+    ahead, must NOT read as first contact — the boundary is the most recent
+    quiet_end, not today's. (Seen live: three 'Morning' pushes at 00:14.)"""
+    await _seed_transcript(db, USER_A, "user", "the tank is low")
+    got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
+    assert "first_contact_of_day" not in got.context
+
+
+async def test_active_wakeups_render_for_reconciliation(db: Database):
+    async with db.with_tenant(USER_A) as conn:
+        await conn.execute(
+            "INSERT INTO scheduled_wakeups (user_id, fire_at, purpose, created_by) "
+            "VALUES (%s, %s, 'check French block landed', 'agent:turn:1')",
+            (USER_A, NOW + timedelta(hours=2)),
+        )
+    got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
+    assert "## Your scheduled wakeups" in got.context
+    assert "check French block landed" in got.context
+    assert "[wakeup 1]" in got.context  # the id CancelWakeup needs
+
+
+async def test_no_wakeups_no_section(db: Database):
+    got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
+    assert "## Your scheduled wakeups" not in got.context
 
 
 async def test_worker_passes_assembled_context_to_the_gateway(db: Database):

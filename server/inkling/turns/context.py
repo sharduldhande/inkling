@@ -32,6 +32,7 @@ from inkling.db.queries import facts as facts_q
 from inkling.db.queries import health as health_q
 from inkling.db.queries import transcript as transcript_q
 from inkling.db.queries import users as users_q
+from inkling.db.queries import wakeups as wakeups_q
 from inkling.prompts.system import SYSTEM_PROMPT
 from inkling.turns import ingress
 
@@ -41,8 +42,9 @@ from inkling.turns.validate import WORKING_STATE_TOKEN_CAP, estimate_tokens
 
 log = logging.getLogger(__name__)
 
-# §8.1 budgets (tokens). The system prompt's 1200 is the prompt's own budget;
-# it is fixed text we wrote, so it is asserted, not truncated.
+# §8.1 budgets (tokens). The system prompt is deliberately unbudgeted — it is
+# a stable, prompt-cached prefix reviewed for sharpness, not size (see
+# prompts/system.py); its estimated size rides the assembly log line below.
 BUDGETS = {
     "goals": 400,
     "patterns": 600,
@@ -50,6 +52,7 @@ BUDGETS = {
     "working_state": WORKING_STATE_TOKEN_CAP,  # 1200 hard cap, marker on excess
     "daily_plan": 400,
     "commitments": 400,  # never silently truncated; bounded by row limit below
+    "wakeups": 250,
     "pending_ingestion": 300,
     "today": 300,
     "transcript": 800,
@@ -206,6 +209,7 @@ async def assemble_context(
         streaks = await events_q.streaks(
             conn, timezone=user["timezone"], week_start=now - timedelta(days=7)
         )
+        active_wakeups = await wakeups_q.active(conn)
         pending_docs = await documents_q.unconfirmed(conn)
         tail = await transcript_q.tail(conn, TRANSCRIPT_TAIL)
         episodes: list[tuple[str, dict[str, Any]]] = []
@@ -277,6 +281,24 @@ async def assemble_context(
     else:
         commitments_body = "(none)"
     sections.append(("commitments", "## Commitments (due / upcoming)", commitments_body))
+
+    # Pending wakeups: without this the model re-schedules follow-ups blind —
+    # seen live: 4 duplicate "check the block landed" wakeups in one evening,
+    # firing as a burst of near-identical pushes. Visibility + the prompt's
+    # one-follow-up-per-thread rule is the fix.
+    if active_wakeups:
+        lines = [
+            f"- [wakeup {w['id']}] "
+            + (f"fires {_local(w['fire_at'], tz)}" if w["fire_at"]
+               else f"recurs {w['recurrence']}")
+            + f" — {w['purpose']}"
+            for w in active_wakeups
+        ]
+        sections.append((
+            "wakeups", "## Your scheduled wakeups (reconcile — don't duplicate)",
+            _clip_lines(lines, BUDGETS["wakeups"],
+                        "[more not shown]", drop_head=False),
+        ))
 
     # §14: an uploaded document whose proposed schedule the user hasn't
     # confirmed yet. The section carries the how-to so the system prompt
@@ -370,8 +392,10 @@ async def assemble_context(
                         "[lower-ranked matches omitted]", drop_head=False),
         ))
 
-    # First contact of the day: no conversation since the current local day's
-    # quiet_end. Judged from the transcript, not turns, so a presence turn
+    # First contact of the day: no conversation since the MOST RECENT
+    # quiet_end — yesterday's when now is past midnight but before today's
+    # (the day does not flip at midnight; seen live: three "Morning" pushes
+    # at 00:14). Judged from the transcript, not turns, so a presence turn
     # that chose silence doesn't count as having opened the day. The flag
     # tells the model this turn establishes the day's shape (see prompt).
     quiet_end = user["quiet_end"]
@@ -379,6 +403,8 @@ async def assemble_context(
         hour=quiet_end.hour, minute=quiet_end.minute,
         second=quiet_end.second, microsecond=0,
     )
+    if day_open > local_now:
+        day_open -= timedelta(days=1)
     first_contact = not tail or tail[-1]["ts"].astimezone(tz) < day_open
 
     trigger_body = _clip(format_trigger(trigger), BUDGETS["trigger"],
@@ -393,8 +419,10 @@ async def assemble_context(
     context = "\n\n".join(f"{header}\n{body}" for _, header, body in sections)
     sizes = {name: estimate_tokens(body) for name, _, body in sections}
     log.info(
-        "assembled context for user %s trigger %s: %d tokens total, sections %s",
-        user_id, trigger["id"], sum(sizes.values()), sizes,
+        "assembled context for user %s trigger %s: %d tokens total "
+        "(+ ~%d system prompt), sections %s",
+        user_id, trigger["id"], sum(sizes.values()),
+        estimate_tokens(SYSTEM_PROMPT), sizes,
     )
 
     if ws_over_cap:
