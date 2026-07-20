@@ -177,6 +177,19 @@ class StubS3:
         return sorted(k for k in self.store if k.startswith(prefix))
 
 
+def region_from_endpoint(endpoint: str) -> str:
+    """SigV4 region from an `s3.<region>.<vendor>` endpoint host.
+
+    B2 (and AWS itself) reject signatures scoped to the wrong region, so
+    us-east-1 only works as a fallback for vendors that ignore it (R2, MinIO).
+    """
+    host = urlsplit(endpoint).netloc or endpoint
+    parts = host.split(".")
+    if len(parts) >= 3 and parts[0] == "s3":
+        return parts[1]
+    return "us-east-1"
+
+
 def stub_or_real(config: Any) -> S3Client | None:
     """An S3Client when §19.3's bucket decision has been made, else None."""
     if not (config.backup_s3_endpoint and config.backup_s3_bucket):
@@ -186,4 +199,5 @@ def stub_or_real(config: Any) -> S3Client | None:
         bucket=config.backup_s3_bucket,
         access_key=config.backup_s3_key,
         secret_key=config.backup_s3_secret,
+        region=region_from_endpoint(config.backup_s3_endpoint),
     )

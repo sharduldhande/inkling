@@ -335,3 +335,13 @@ def test_sign_v4_is_deterministic_and_shaped_right():
         now=datetime(2026, 7, 17, 3, 10, tzinfo=UTC),
     )
     assert headers == again
+
+
+def test_region_from_endpoint():
+    from inkling.lib.s3 import region_from_endpoint
+
+    assert region_from_endpoint("https://s3.us-east-005.backblazeb2.com") == "us-east-005"
+    assert region_from_endpoint("https://s3.eu-central-003.backblazeb2.com") == "eu-central-003"
+    # vendors without a region host segment fall back to the SigV4 default
+    assert region_from_endpoint("https://accountid.r2.cloudflarestorage.com") == "us-east-1"
+    assert region_from_endpoint("http://localhost:9000") == "us-east-1"
