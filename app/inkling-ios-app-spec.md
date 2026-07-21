@@ -170,11 +170,12 @@ appended after them, newest completion first. Four sources:
    interval '24 hours'`, ordered `updated_at DESC`, limit 50. Shape:
    `{"id","kind":"commitment","title","body","due","done":true,"done_ts"}`
    — `due` nullable (undated commitments complete too), `done_ts` =
-   `updated_at` (CompleteCommitment is the only writer that moves a
-   commitment to `done`, bumping `updated_at`). Live items never carry a
-   `done` key. Completion still happens ONLY via chat; this is a read-side
-   projection so done tasks show checked off for a day instead of
-   vanishing.
+   `updated_at` (CompleteCommitment with outcome `done` is the only writer
+   that moves a commitment to `done`, bumping `updated_at`; outcome
+   `dropped` lands as `cancelled`, which never surfaces — a dropped plan
+   is not a false checkmark). Live items never carry a `done` key.
+   Completion still happens ONLY via chat; this is a read-side projection
+   so done tasks show checked off for a day instead of vanishing.
 5. Recurring done-today: habit_done events carrying `commitment_id`
    (events column added in 007) joined to their open recurring
    commitment, event `occurred_at` on TODAY in the user's stored
@@ -459,8 +460,10 @@ whole response; dispatch UI updates to the MainActor as chunks arrive.
   `kind:"recurring"` done row means "checked off today" — the loop stays
   open and its next occurrence may also list live; both showing is
   intended. Completion happens ONLY via chat — the model closes one-shots
-  with CompleteCommitment and checks recurring days off with a habit_done
-  event naming the commitment; the app never writes.
+  with CompleteCommitment (outcome `done` → shows here; outcome `dropped` →
+  `cancelled`, never shown) and checks recurring days off with a habit_done
+  event naming the commitment; the app never writes. Closure records the
+  USER's verdict — a lapsed deadline stays open and overdue.
 
 ### B3e. `GET /measurements` (Part A)
 
