@@ -28,6 +28,25 @@ ORDER BY due_at, id
 LIMIT 100
 """
 
+# Completions stay visible for a day instead of vanishing: the Today pane
+# shows them checked off so "done" reads as an outcome, not a deletion.
+# updated_at stands in for completed-at — CompleteCommitment is the only
+# writer that moves a commitment to 'done', bumping updated_at as it does.
+_AGENDA_DONE = """
+SELECT
+  'c:' || id::text AS id,
+  title,
+  body,
+  (extract(epoch FROM due_at) * 1000)::bigint AS due,
+  (extract(epoch FROM updated_at) * 1000)::bigint AS done_ts
+FROM commitments
+WHERE user_id = %s
+  AND status = 'done'
+  AND updated_at >= now() - interval '24 hours'
+ORDER BY updated_at DESC, id DESC
+LIMIT 50
+"""
+
 _AGENDA_OCCURRENCES = """
 SELECT
   'o:' || o.id::text AS id,
@@ -209,6 +228,8 @@ async def agenda(
         occurrence_rows = await cur.fetchall()
         cur = await conn.execute(_AGENDA_CALENDAR, (user_id,))
         calendar_rows = await cur.fetchall()
+        cur = await conn.execute(_AGENDA_DONE, (user_id,))
+        done_rows = await cur.fetchall()
 
     items = [
         {
@@ -243,7 +264,23 @@ async def agenda(
         for r in calendar_rows
     )
     items.sort(key=lambda item: item.get("due", item.get("starts")))
-    return JSONResponse({"items": items[:100]})
+    # Done items ride after the live ones (newest completion first) rather
+    # than interleaving: an undated commitment has no due to sort by, and the
+    # client sections them separately anyway.
+    items = items[:100]
+    items.extend(
+        {
+            "id": r["id"],
+            "kind": "commitment",
+            "title": r["title"],
+            "body": r["body"],
+            "due": int(r["due"]) if r["due"] is not None else None,
+            "done": True,
+            "done_ts": int(r["done_ts"]),
+        }
+        for r in done_rows
+    )
+    return JSONResponse({"items": items})
 
 
 @router.get("/measurements")

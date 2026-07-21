@@ -63,13 +63,22 @@ async def seeded(migrated: str, dsn: str):
             """,
             (USER_A, now - timedelta(hours=4)),
         ).fetchone()[0]
-        conn.execute(
+        done_id = conn.execute(
             """
             INSERT INTO commitments
               (user_id, title, due_at, status, source)
             VALUES (%s, 'Already done', %s, 'done', 'conversation')
+            RETURNING id
             """,
             (USER_A, now - timedelta(hours=3)),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO commitments
+              (user_id, title, due_at, status, source, updated_at)
+            VALUES (%s, 'Done long ago', %s, 'done', 'conversation', %s)
+            """,
+            (USER_A, now - timedelta(days=2), now - timedelta(hours=25)),
         )
         conn.execute(
             """
@@ -197,6 +206,7 @@ async def seeded(migrated: str, dsn: str):
         "workout_date": workout_at.astimezone(LOCAL_TIMEZONE).date(),
         "weight_at": weight_at,
         "overdue_id": overdue_id,
+        "done_id": done_id,
         "occurrence_id": occurrence_id,
         "corrected_meal_id": corrected_meal_id,
         "bucket_meal_id": bucket_meal_id,
@@ -236,6 +246,7 @@ async def test_agenda_merges_typed_items_in_time_order(client, seeded):
         "commitment",
         "recurring",
         "calendar",
+        "commitment",
     ]
     assert items[0] == {
         "id": f"c:{seeded['overdue_id']}",
@@ -250,10 +261,20 @@ async def test_agenda_merges_typed_items_in_time_order(client, seeded):
     assert items[1]["overdue"] is False
     assert items[2]["id"] == "g:evt-abc"
     assert set(items[2]) == {"id", "kind", "title", "starts", "ends"}
-    assert [item.get("due", item.get("starts")) for item in items] == sorted(
-        item.get("due", item.get("starts")) for item in items
+    live = items[:3]
+    assert [item.get("due", item.get("starts")) for item in live] == sorted(
+        item.get("due", item.get("starts")) for item in live
     )
-    assert not any(item["title"] == "Already done" for item in items)
+    done = items[3]
+    assert set(done) == {"id", "kind", "title", "body", "due", "done", "done_ts"}
+    assert done["id"] == f"c:{seeded['done_id']}"
+    assert done["title"] == "Already done"
+    assert done["done"] is True
+    assert done["due"] == int(
+        (seeded["now"] - timedelta(hours=3)).timestamp() * 1000
+    )
+    assert isinstance(done["done_ts"], int)
+    assert not any(item["title"] == "Done long ago" for item in items)
     assert not any(item["title"] == "Beyond the window" for item in items)
 
 
