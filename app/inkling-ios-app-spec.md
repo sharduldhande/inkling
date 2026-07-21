@@ -144,13 +144,14 @@ Response:
 {"items":[
   {"id":"c:12","kind":"commitment","title":"Pay electricity bill","body":null,"due":1752829200000,"overdue":true},
   {"id":"o:98","kind":"recurring","title":"Evening review","body":null,"due":1752861600000,"overdue":false},
-  {"id":"g:evt-abc","kind":"calendar","title":"Dentist","starts":1752858000000,"ends":1752861600000}
+  {"id":"g:evt-abc","kind":"calendar","title":"Dentist","starts":1752858000000,"ends":1752861600000},
+  {"id":"c:11","kind":"commitment","title":"Book dentist","body":null,"due":1752822000000,"done":true,"done_ts":1752825600000}
 ]}
 ```
 
-One flat list, sorted ascending by `due`/`starts` (overdue sorts first
-naturally), truncated to 100 items. Three sources, each limited to 100
-before the merge:
+One flat list: live items sorted ascending by `due`/`starts` (overdue sorts
+first naturally), truncated to 100 — then recently completed commitments
+appended after them, newest completion first. Four sources:
 
 1. One-shot commitments: `status='open' AND due_at IS NOT NULL AND
    due_at <= now() + interval '48 hours'` — no lower bound (overdue is
@@ -165,6 +166,15 @@ before the merge:
    >= now() AND starts_at <= now() + interval '48 hours'`; title =
    `coalesce(summary, '(untitled)')`, id `'g:' || provider_event_id`, kind
    `calendar`; `ends` null when NULL.
+4. Recently completed commitments: `status='done' AND updated_at >= now() -
+   interval '24 hours'`, ordered `updated_at DESC`, limit 50. Shape:
+   `{"id","kind":"commitment","title","body","due","done":true,"done_ts"}`
+   — `due` nullable (undated commitments complete too), `done_ts` =
+   `updated_at` (CompleteCommitment is the only writer that moves a
+   commitment to `done`, bumping `updated_at`). Live items never carry a
+   `done` key. Completion still happens ONLY via chat; this is a read-side
+   projection so done tasks show checked off for a day instead of
+   vanishing.
 
 ### A2b. `GET /measurements` — 7-day typed ledger
 
@@ -249,10 +259,12 @@ Required cases (at minimum):
 
 1. `/agenda`, `/measurements`, `/days` each 401 with bare body
    `unauthorized` when unauthenticated.
-2. `/agenda`: overdue open commitment first with `overdue:true`; done
-   commitments and >48h commitments absent; in-window calendar event and
-   pending occurrence of a recurring commitment present, correctly typed
-   (`kind`, id prefixes, exact key sets per A2a); ascending order.
+2. `/agenda`: overdue open commitment first with `overdue:true`; >48h
+   commitments absent; in-window calendar event and pending occurrence of a
+   recurring commitment present, correctly typed (`kind`, id prefixes, exact
+   key sets per A2a); live items ascending; a commitment completed within
+   24h appended after the live items with `done:true` and `done_ts`;
+   commitments completed >24h ago absent.
 3. `/measurements`: superseded meal hidden, superseding meal shown with its
    macros as floats; workout and weight rows present with exact key sets
    per A2b; 8-day-old rows absent; newest-first.
@@ -416,18 +428,25 @@ whole response; dispatch UI updates to the MainActor as chunks arrive.
 → 200 {"items":[
   {"id":"c:12","kind":"commitment","title":"Pay electricity bill","body":null,"due":1752829200000,"overdue":true},
   {"id":"o:98","kind":"recurring","title":"Evening review","body":null,"due":1752861600000,"overdue":false},
-  {"id":"g:evt-abc","kind":"calendar","title":"Dentist","starts":1752858000000,"ends":1752861600000}
+  {"id":"g:evt-abc","kind":"calendar","title":"Dentist","starts":1752858000000,"ends":1752861600000},
+  {"id":"c:11","kind":"commitment","title":"Book dentist","body":null,"due":1752822000000,"done":true,"done_ts":1752825600000}
 ]}
 ```
 
-- One flat list, sorted ascending by `due`/`starts`; overdue items sort
-  first naturally (their timestamps are in the past). Max 100 items.
-- Window: everything overdue plus 48 hours ahead. Fixed server-side; the app
-  sends no query parameters.
+- One flat list: live items sorted ascending by `due`/`starts` (overdue
+  items sort first naturally — their timestamps are in the past), max 100,
+  then commitments completed in the last 24 hours appended after them,
+  newest completion first, max 50.
+- Window: everything overdue plus 48 hours ahead; done items by completion
+  time, not due. Fixed server-side; the app sends no query parameters.
 - `body` and `ends` are nullable. `kind` is one of exactly
   `commitment | recurring | calendar` — but decode as `String` and render
   unknown kinds like `commitment` (same forward-compatibility rule as
   `role`).
+- `done` (Bool) and `done_ts` (ms) appear only on completed commitments;
+  absent means live. `due` is nullable on done items (undated commitments
+  complete too). Completion happens ONLY via chat — the model closes the
+  commitment when the user says it's done; the app never writes.
 
 ### B3e. `GET /measurements` (Part A)
 
@@ -518,16 +537,22 @@ cannot use replay. Recovery from dropped streams goes through history sync
 
 Data: `GET /agenda`, held in `AgendaStore`.
 
-- Two list sections:
-  - **"Overdue"** — items with `overdue == true`. Section omitted entirely
-    when empty.
-  - **"Next 48 hours"** — everything else. When empty, show a centered
-    placeholder: calendar SF symbol, caption "Nothing due in the next 48
-    hours." (If both sections are empty, only the placeholder shows.)
+- Three list sections:
+  - **"Overdue"** — live items with `overdue == true`. Section omitted
+    entirely when empty.
+  - **"Next 48 hours"** — every other live item. When empty, show a
+    centered placeholder: calendar SF symbol, caption "Nothing due in the
+    next 48 hours." (If all sections are empty, only the placeholder
+    shows.)
+  - **"Done"** — items with `done == true`, in server order (newest
+    completion first). Section omitted entirely when empty.
 - Row layout (all kinds): title in body font, one line, truncating tail;
-  below it a caption line with the time. `calendar`-kind rows additionally
-  show a small `calendar` SF symbol before the title; `recurring` rows a
-  small `repeat` symbol.
+  below it a caption line with the time. A small SF symbol before the
+  title: `checkmark.circle.fill` in `.green` for done rows (any kind);
+  otherwise `calendar` for `calendar`-kind rows, `repeat` for `recurring`
+  rows, and an open `circle` in `.secondary` for plain commitments — open
+  circle vs green check is how done/not-done reads at a glance. No
+  strikethrough; done titles stay in primary color.
 - Caption formatting rules (implement exactly, using the device's locale
   and time zone):
   - Overdue: `"Overdue — was due " + RelativeDateTimeFormatter` output
@@ -538,9 +563,14 @@ Data: `GET /agenda`, held in `AgendaStore`.
     `Date.FormatStyle().weekday(.abbreviated).hour().minute()` ("Sat 9:00 AM").
   - `calendar` rows with a non-null `ends` on the same day append the end
     time: "in 3 hours until 6:00 PM" / "Sat 5:00–6:00 PM".
+  - Done: `"Done " + RelativeDateTimeFormatter` output on `done_ts`
+    ("Done 2 hours ago"); bare "Done" if `done_ts` is somehow absent.
+    Caption in `.secondary`.
 - `body`, when non-null, is NOT shown in the row (rows stay one-line); it is
   included in the tap-to-chat prefill (§B7).
-- No swipe actions, no context menus, no checkmarks, no delete. Read-only.
+- No swipe actions, no context menus, no delete. Read-only — the done
+  checkmark is a server-computed fact, never a tappable control; marking
+  done happens by telling the chat.
 - Refresh policy (identical for Log, define once): fetch on first appear;
   on every `scenePhase == .active` transition; after every chat turn that
   completes (`done` frame received) — a turn may have created or completed
@@ -898,7 +928,9 @@ launch-screen artwork; no app icon required (may be added later).
    assistant bubble, in chronological position, on foregrounding.
 7. Today tab: an overdue commitment shows in a red "Overdue" section; a
    commitment due in 3 days does NOT appear; a calendar event tomorrow
-   does. Empty state renders when the server returns no items.
+   does. Empty state renders when the server returns no items. Telling the
+   chat a task is done moves it to a "Done" section (green check, "Done
+   moments ago") on the post-turn refresh; it drops off Today a day later.
 8. Log tab: quota tiles show remaining vs quota from `/days` (and the
    "Set a quota in chat" state when targets are absent); both heatmaps
    render 12 weeks with correct colors, neutral prehistory, and a ringed

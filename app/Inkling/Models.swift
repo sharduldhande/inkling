@@ -55,7 +55,18 @@ struct AgendaItem: Identifiable, Codable, Equatable {
     let overdue: Bool?
     let starts: Int?
     let ends: Int?
+    let done: Bool?
+    let doneTs: Int?
 
+    enum CodingKeys: String, CodingKey {
+        case id, kind, title, body, due, overdue, starts, ends, done
+        case doneTs = "done_ts"
+    }
+
+    var isDone: Bool { done == true }
+    var doneDate: Date? {
+        doneTs.map { Date(timeIntervalSince1970: Double($0) / 1_000) }
+    }
     var isOverdue: Bool { overdue == true }
     var eventDate: Date {
         Date(timeIntervalSince1970: Double(starts ?? due ?? 0) / 1_000)

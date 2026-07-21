@@ -4,8 +4,9 @@ struct AgendaView: View {
     @Bindable var store: AgendaStore
     let tapped: (AgendaItem) -> Void
 
-    private var overdue: [AgendaItem] { store.items.filter(\.isOverdue) }
-    private var upcoming: [AgendaItem] { store.items.filter { !$0.isOverdue } }
+    private var overdue: [AgendaItem] { store.items.filter { $0.isOverdue && !$0.isDone } }
+    private var upcoming: [AgendaItem] { store.items.filter { !$0.isOverdue && !$0.isDone } }
+    private var done: [AgendaItem] { store.items.filter(\.isDone) }
 
     var body: some View {
         List {
@@ -26,6 +27,11 @@ struct AgendaView: View {
                         ForEach(upcoming) { row(for: $0) }
                     }
                 }
+                if !done.isEmpty {
+                    Section("Done") {
+                        ForEach(done) { row(for: $0) }
+                    }
+                }
             }
         }
         .listStyle(.insetGrouped)
@@ -39,12 +45,20 @@ struct AgendaView: View {
         Button { tapped(item) } label: {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    if item.kind == "calendar" {
+                    if item.isDone {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else if item.kind == "calendar" {
                         Image(systemName: "calendar")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else if item.kind == "recurring" {
                         Image(systemName: "repeat")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: "circle")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -88,6 +102,10 @@ struct AgendaView: View {
         let relative = RelativeDateTimeFormatter()
         relative.dateTimeStyle = .named
         relative.unitsStyle = .full
+        if item.isDone {
+            guard let doneDate = item.doneDate else { return "Done" }
+            return "Done \(relative.localizedString(for: doneDate, relativeTo: Date()))"
+        }
         let relativeText = relative.localizedString(for: item.eventDate, relativeTo: Date())
         if item.isOverdue {
             return "Overdue — was due \(relativeText)"
