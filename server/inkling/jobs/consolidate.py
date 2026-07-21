@@ -76,6 +76,11 @@ in context: confirm, correct, or add — never duplicate.
 schedule a morning-question wakeup (ScheduleWakeup, purpose stating the exact \
 question) rather than guessing.
 
+Doc caps are HARD and measured by a crude chars/4 estimator, not your \
+tokenizer: an over-cap UpdateDoc is rejected WHOLE and that night's update \
+is lost (seen live: a 623-token patterns draft against the 600 cap). Draft \
+each doc to roughly 15% UNDER its cap, pruning the weakest or oldest \
+material to make room — these docs are distillations, not logs.
 Only emit commands for what actually needs to change; an uneventful day may \
 need nothing but the digest. Never invent events that are not in the record.
 """
