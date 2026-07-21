@@ -130,6 +130,20 @@ WHERE commitment_id = %s AND status IN ('pending', 'eligible')
 RETURNING id
 """
 
+# A habit_done/habit_skipped event naming a recurring commitment retires that
+# LOCAL day's un-surfaced occurrence so the reminder for a thing already done
+# never fires. Local-day, not a rolling window: "done" at 11pm must not eat
+# tomorrow morning's occurrence.
+_SKIP_SAME_DAY = """
+UPDATE commitment_occurrences
+SET status = 'skipped_done'
+WHERE commitment_id = %s
+  AND status IN ('pending', 'eligible')
+  AND (fire_at AT TIME ZONE %s)::date
+      = (%s::timestamptz AT TIME ZONE %s)::date
+RETURNING id
+"""
+
 # §11 acknowledgement heuristic: any chat turn after a reminder surfaced marks
 # that user's un-acknowledged surfaced occurrences acknowledged. Deliberately
 # coarse — the v1 app has no ack channel, and the user talking to us at all is
@@ -280,6 +294,16 @@ async def skip_unsurfaced_occurrences(
     conn: AsyncConnection, commitment_id: int
 ) -> int:
     cur = await conn.execute(_SKIP_UNSURFACED, (commitment_id,))
+    return len(await cur.fetchall())
+
+
+async def skip_same_day_occurrences(
+    conn: AsyncConnection, *, commitment_id: int, done_at: Any, timezone: str
+) -> int:
+    """Retire pending/eligible occurrences on done_at's local day."""
+    cur = await conn.execute(
+        _SKIP_SAME_DAY, (commitment_id, timezone, done_at, timezone)
+    )
     return len(await cur.fetchall())
 
 

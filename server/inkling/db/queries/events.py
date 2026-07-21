@@ -11,8 +11,9 @@ from psycopg import AsyncConnection
 _INSERT = """
 INSERT INTO events
   (user_id, occurred_at, kind, habit_id, value_num, unit, note, corrects_id,
-   source, turn_id)
-VALUES (%s, COALESCE(%s::timestamptz, now()), %s, %s, %s, %s, %s, %s, %s, %s)
+   source, turn_id, commitment_id)
+VALUES (%s, COALESCE(%s::timestamptz, now()), %s, %s, %s, %s, %s, %s, %s, %s,
+        %s)
 RETURNING *
 """
 
@@ -66,6 +67,7 @@ async def insert(
     corrects_id: int | None = None,
     source: str = "conversation",
     turn_id: int | None = None,
+    commitment_id: int | None = None,
 ) -> dict[str, Any]:
     cur = await conn.execute(
         _INSERT,
@@ -80,6 +82,7 @@ async def insert(
             corrects_id,
             source,
             turn_id,
+            commitment_id,
         ),
     )
     row = await cur.fetchone()

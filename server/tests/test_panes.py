@@ -39,7 +39,7 @@ async def seeded(migrated: str, dsn: str):
 
     with psycopg.connect(dsn) as conn:
         conn.execute(
-            "TRUNCATE commitment_occurrences, commitments, "
+            "TRUNCATE events, commitment_occurrences, commitments, "
             "calendar_events_cache, intake, workouts, body_metrics "
             "RESTART IDENTITY CASCADE"
         )
@@ -108,6 +108,31 @@ async def seeded(migrated: str, dsn: str):
             """,
             (USER_A, recurring_id, now + timedelta(hours=1)),
         ).fetchone()[0]
+        done_recurring_id = conn.execute(
+            """
+            INSERT INTO commitments
+              (user_id, title, recurrence, status, source)
+            VALUES (%s, 'French practice', 'FREQ=DAILY', 'open', 'conversation')
+            RETURNING id
+            """,
+            (USER_A,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO events
+              (user_id, occurred_at, kind, note, commitment_id)
+            VALUES (%s, %s, 'habit_done', 'did french', %s)
+            """,
+            (USER_A, now, done_recurring_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO events
+              (user_id, occurred_at, kind, note, commitment_id)
+            VALUES (%s, %s, 'habit_done', 'did french two days ago', %s)
+            """,
+            (USER_A, now - timedelta(days=2), done_recurring_id),
+        )
         conn.execute(
             """
             INSERT INTO calendar_events_cache
@@ -207,6 +232,7 @@ async def seeded(migrated: str, dsn: str):
         "weight_at": weight_at,
         "overdue_id": overdue_id,
         "done_id": done_id,
+        "done_recurring_id": done_recurring_id,
         "occurrence_id": occurrence_id,
         "corrected_meal_id": corrected_meal_id,
         "bucket_meal_id": bucket_meal_id,
@@ -247,6 +273,7 @@ async def test_agenda_merges_typed_items_in_time_order(client, seeded):
         "recurring",
         "calendar",
         "commitment",
+        "recurring",
     ]
     assert items[0] == {
         "id": f"c:{seeded['overdue_id']}",
@@ -274,6 +301,16 @@ async def test_agenda_merges_typed_items_in_time_order(client, seeded):
         (seeded["now"] - timedelta(hours=3)).timestamp() * 1000
     )
     assert isinstance(done["done_ts"], int)
+    done_recurring = items[4]
+    assert done_recurring == {
+        "id": f"c:{seeded['done_recurring_id']}",
+        "kind": "recurring",
+        "title": "French practice",
+        "body": None,
+        "due": None,
+        "done": True,
+        "done_ts": int(seeded["now"].timestamp() * 1000),
+    }, "one done row per habit, stamped by TODAY's event, not the stale one"
     assert not any(item["title"] == "Done long ago" for item in items)
     assert not any(item["title"] == "Beyond the window" for item in items)
 

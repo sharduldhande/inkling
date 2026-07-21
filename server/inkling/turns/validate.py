@@ -221,6 +221,20 @@ async def _validate_append_event(
             return f"document {cmd.document_id} not found"  # RLS: or not yours
         if doc["confirmed_at"] is not None:
             return f"document {cmd.document_id} was already confirmed"
+    if cmd.commitment_id is not None:
+        if cmd.kind not in ("habit_done", "habit_skipped"):
+            return (
+                "commitment_id only belongs on habit_done/habit_skipped events"
+            )
+        row = await commitments_q.get(conn, cmd.commitment_id)
+        if row is None:
+            return f"commitment {cmd.commitment_id} not found"  # RLS: or not yours
+        if row["status"] != "open" or row["recurrence"] is None:
+            return (
+                f"commitment {cmd.commitment_id} is not an open recurring "
+                "commitment — commitment_id marks a recurring day done; "
+                "one-shots close via CompleteCommitment"
+            )
     return None
 
 

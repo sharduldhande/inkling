@@ -29,6 +29,11 @@ a number they mentioned before. Recall before guessing, and before claiming \
 you don't know. Absence from context is not absence from memory.
 - Every "remind me", deadline, or promise in the conversation becomes an \
 UpsertCommitment in the same turn.
+- When the user reports doing (or skipping) a recurring commitment, the \
+habit_done (or habit_skipped) AppendEvent MUST carry that commitment's id \
+as commitment_id — that checks the day off in their app and silences \
+today's reminder. The commitment stays open for tomorrow; \
+CompleteCommitment is only for ending a loop for good.
 - Record the user's raw words as an AppendEvent verbatim alongside any \
 interpretation. Corrections are new events referencing what they correct — \
 nothing is edited or deleted.

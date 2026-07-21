@@ -249,6 +249,115 @@ async def test_append_event_cannot_reference_another_users_habit(db: Database):
     assert "unknown habit" in verdict.rejected[0].reason
 
 
+async def test_habit_done_with_commitment_id_retires_todays_occurrence(
+    db: Database,
+):
+    """Naming the recurring commitment checks today off without closing it:
+    today's un-fired occurrence retires, tomorrow's survives, and the event
+    row carries the attribution /agenda projects as done-today."""
+    await _run_turn(
+        db,
+        USER_A,
+        [
+            {
+                "type": "UpsertCommitment",
+                "title": "french practice",
+                "recurrence": "FREQ=DAILY",
+            }
+        ],
+    )
+    now = _now()
+    async with db.with_tenant(USER_A) as conn:
+        for fire_at in (now, now + timedelta(hours=24)):
+            await conn.execute(
+                "INSERT INTO commitment_occurrences "
+                "(user_id, commitment_id, fire_at) VALUES (%s, 1, %s)",
+                (USER_A, fire_at),
+            )
+
+    await _run_turn(
+        db,
+        USER_A,
+        [
+            {
+                "type": "AppendEvent",
+                "kind": "habit_done",
+                "commitment_id": 1,
+                "note": "did french",
+            }
+        ],
+    )
+
+    commitment = (await _rows(db, USER_A, "SELECT * FROM commitments"))[0]
+    assert commitment["status"] == "open", "a daily done must not end the loop"
+    occ = await _rows(
+        db, USER_A, "SELECT * FROM commitment_occurrences ORDER BY fire_at"
+    )
+    assert [o["status"] for o in occ] == ["skipped_done", "pending"]
+    event = (
+        await _rows(
+            db, USER_A, "SELECT * FROM events WHERE kind = 'habit_done'"
+        )
+    )[0]
+    assert event["commitment_id"] == 1
+
+
+async def test_commitment_id_only_fits_recurring_habit_kinds(db: Database):
+    await _run_turn(
+        db,
+        USER_A,
+        [
+            {
+                "type": "UpsertCommitment",
+                "title": "one-shot errand",
+                "due_at": (_now() + timedelta(hours=5)).isoformat(),
+            }
+        ],
+    )
+
+    verdict = await _validate(
+        db,
+        USER_A,
+        [
+            {
+                "type": "AppendEvent",
+                "kind": "habit_done",
+                "commitment_id": 1,
+                "note": "done",
+            }
+        ],
+    )
+    assert "not an open recurring" in verdict.rejected[0].reason
+
+    verdict = await _validate(
+        db,
+        USER_A,
+        [
+            {
+                "type": "AppendEvent",
+                "kind": "note",
+                "commitment_id": 1,
+                "note": "thinking about it",
+            }
+        ],
+    )
+    assert "only belongs on habit_done" in verdict.rejected[0].reason
+
+    verdict = await _validate(
+        db,
+        USER_A,
+        [
+            {
+                "type": "AppendEvent",
+                "kind": "habit_done",
+                "commitment_id": 404,
+                "note": "done",
+            }
+        ],
+    )
+    assert "not found" in verdict.rejected[0].reason
+
+
 # --- UpsertCommitment -------------------------------------------------------
 
 

@@ -59,7 +59,12 @@ def _authorship(turn_id: int) -> str:
 
 
 async def _apply_append_event(
-    conn: AsyncConnection, cmd: AppendEvent, *, user_id: str, turn_id: int
+    conn: AsyncConnection,
+    cmd: AppendEvent,
+    *,
+    user_id: str,
+    turn_id: int,
+    user_timezone: str,
 ) -> dict[str, Any]:
     row = await events_q.insert(
         conn,
@@ -75,6 +80,7 @@ async def _apply_append_event(
             if cmd.document_id is not None else "conversation"
         ),
         turn_id=turn_id,
+        commitment_id=cmd.commitment_id,
     )
     detail: dict[str, Any] = {"event_id": int(row["id"])}
     if cmd.document_id is not None:
@@ -83,6 +89,20 @@ async def _apply_append_event(
         # False here is a caught race, not a silent double-confirm.
         detail["confirmed"] = await documents_q.confirm(conn, cmd.document_id)
         detail["document_id"] = cmd.document_id
+    if cmd.commitment_id is not None:
+        # A recurring day counted: retire that local day's un-fired
+        # occurrence so the reminder for a done thing never nags. The
+        # inserted row's occurred_at (not cmd's, which may be None) anchors
+        # which day counts.
+        detail["commitment_id"] = cmd.commitment_id
+        detail["occurrences_skipped"] = (
+            await commitments_q.skip_same_day_occurrences(
+                conn,
+                commitment_id=cmd.commitment_id,
+                done_at=row["occurred_at"],
+                timezone=user_timezone,
+            )
+        )
     return detail
 
 
@@ -488,7 +508,13 @@ async def apply_command(
     """Apply one accepted command; returns the detail recorded to audit_log."""
     user_id = user["id"]
     if isinstance(cmd, AppendEvent):
-        return await _apply_append_event(conn, cmd, user_id=user_id, turn_id=turn_id)
+        return await _apply_append_event(
+            conn,
+            cmd,
+            user_id=user_id,
+            turn_id=turn_id,
+            user_timezone=user["timezone"],
+        )
     if isinstance(cmd, LogMeal):
         return await _apply_log_meal(
             conn, cmd, user_id=user_id, turn_id=turn_id, index=index

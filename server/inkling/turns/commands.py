@@ -59,6 +59,11 @@ class AppendEvent(_CommandBase):
     # §14: on kind='ingestion' only — records the user's confirmation of a
     # proposed document schedule and sets ingested_documents.confirmed_at.
     document_id: int | None = None
+    # On kind='habit_done'/'habit_skipped' only — names the open recurring
+    # commitment this fulfills, checking off today's occurrence (apply.py
+    # retires it) and surfacing done-today in /agenda. The commitment stays
+    # open; CompleteCommitment is how a loop ENDS, this is how a day counts.
+    commitment_id: int | None = None
 
 
 # Health commands write the typed tables (intake / workouts / body_metrics),

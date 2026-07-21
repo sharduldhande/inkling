@@ -66,6 +66,28 @@ ORDER BY o.fire_at, o.id
 LIMIT 100
 """
 
+# Recurring done-today: a habit_done event naming the commitment IS the
+# completion record (the occurrence machinery only knows firing, and a
+# surfaced occurrence has no done state). Local day, not a rolling window —
+# a habit checked off yesterday evening is not "done" this morning.
+_AGENDA_DONE_RECURRING = """
+SELECT DISTINCT ON (c.id)
+  'c:' || c.id::text AS id,
+  c.title,
+  c.body,
+  (extract(epoch FROM e.occurred_at) * 1000)::bigint AS done_ts
+FROM events e
+JOIN commitments c ON c.id = e.commitment_id
+WHERE e.user_id = %s
+  AND c.user_id = %s
+  AND e.kind = 'habit_done'
+  AND c.status = 'open'
+  AND c.recurrence IS NOT NULL
+  AND (e.occurred_at AT TIME ZONE %s)::date = (now() AT TIME ZONE %s)::date
+ORDER BY c.id, e.occurred_at DESC
+LIMIT 50
+"""
+
 _AGENDA_CALENDAR = """
 SELECT
   'g:' || provider_event_id AS id,
@@ -222,6 +244,8 @@ async def agenda(
         return Response(content=UNAUTHORIZED_BODY, status_code=401)
 
     async with request.app.state.db.with_tenant(user_id) as conn:
+        cur = await conn.execute(_TIMEZONE, (user_id,))
+        timezone = (await cur.fetchone())["timezone"]
         cur = await conn.execute(_AGENDA_COMMITMENTS, (user_id,))
         commitment_rows = await cur.fetchall()
         cur = await conn.execute(_AGENDA_OCCURRENCES, (user_id, user_id))
@@ -230,6 +254,10 @@ async def agenda(
         calendar_rows = await cur.fetchall()
         cur = await conn.execute(_AGENDA_DONE, (user_id,))
         done_rows = await cur.fetchall()
+        cur = await conn.execute(
+            _AGENDA_DONE_RECURRING, (user_id, user_id, timezone, timezone)
+        )
+        done_recurring_rows = await cur.fetchall()
 
     items = [
         {
@@ -279,6 +307,23 @@ async def agenda(
             "done_ts": int(r["done_ts"]),
         }
         for r in done_rows
+    )
+    items.extend(
+        sorted(
+            (
+                {
+                    "id": r["id"],
+                    "kind": "recurring",
+                    "title": r["title"],
+                    "body": r["body"],
+                    "due": None,
+                    "done": True,
+                    "done_ts": int(r["done_ts"]),
+                }
+                for r in done_recurring_rows
+            ),
+            key=lambda item: -item["done_ts"],
+        )
     )
     return JSONResponse({"items": items})
 
