@@ -4,9 +4,14 @@ struct AgendaView: View {
     @Bindable var store: AgendaStore
     let tapped: (AgendaItem) -> Void
 
-    private var overdue: [AgendaItem] { store.items.filter { $0.isOverdue && !$0.isDone } }
-    private var upcoming: [AgendaItem] { store.items.filter { !$0.isOverdue && !$0.isDone } }
-    private var done: [AgendaItem] { store.items.filter(\.isDone) }
+    // Vertical split: realtime tasks (one-shots + calendar) above, recurring
+    // habits below. Server order holds within each filter: live recurring by
+    // fire time, done recurring appended newest-completion-first.
+    private var tasks: [AgendaItem] { store.items.filter { $0.kind != "recurring" } }
+    private var overdue: [AgendaItem] { tasks.filter { $0.isOverdue && !$0.isDone } }
+    private var upcoming: [AgendaItem] { tasks.filter { !$0.isOverdue && !$0.isDone } }
+    private var doneTasks: [AgendaItem] { tasks.filter(\.isDone) }
+    private var recurring: [AgendaItem] { store.items.filter { $0.kind == "recurring" } }
 
     var body: some View {
         List {
@@ -27,9 +32,14 @@ struct AgendaView: View {
                         ForEach(upcoming) { row(for: $0) }
                     }
                 }
-                if !done.isEmpty {
+                if !doneTasks.isEmpty {
                     Section("Done") {
-                        ForEach(done) { row(for: $0) }
+                        ForEach(doneTasks) { row(for: $0) }
+                    }
+                }
+                if !recurring.isEmpty {
+                    Section("Recurring") {
+                        ForEach(recurring) { row(for: $0) }
                     }
                 }
             }
@@ -51,10 +61,6 @@ struct AgendaView: View {
                             .foregroundStyle(.green)
                     } else if item.kind == "calendar" {
                         Image(systemName: "calendar")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if item.kind == "recurring" {
-                        Image(systemName: "repeat")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {

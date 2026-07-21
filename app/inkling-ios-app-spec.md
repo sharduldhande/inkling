@@ -175,6 +175,16 @@ appended after them, newest completion first. Four sources:
    `done` key. Completion still happens ONLY via chat; this is a read-side
    projection so done tasks show checked off for a day instead of
    vanishing.
+5. Recurring done-today: habit_done events carrying `commitment_id`
+   (events column added in 007) joined to their open recurring
+   commitment, event `occurred_at` on TODAY in the user's stored
+   timezone (local day, not rolling — yesterday evening's habit is not
+   "done" this morning). `DISTINCT ON (c.id)` newest event; limit 50;
+   appended last, newest completion first. Shape:
+   `{"id":"c:<id>","kind":"recurring","title","body","due":null,
+   "done":true,"done_ts":<event occurred_at ms>}`. The commitment stays
+   open — tomorrow's occurrence still lists live; both rows showing
+   (done today + next upcoming) is intended.
 
 ### A2b. `GET /measurements` — 7-day typed ledger
 
@@ -443,10 +453,14 @@ whole response; dispatch UI updates to the MainActor as chunks arrive.
   `commitment | recurring | calendar` — but decode as `String` and render
   unknown kinds like `commitment` (same forward-compatibility rule as
   `role`).
-- `done` (Bool) and `done_ts` (ms) appear only on completed commitments;
-  absent means live. `due` is nullable on done items (undated commitments
-  complete too). Completion happens ONLY via chat — the model closes the
-  commitment when the user says it's done; the app never writes.
+- `done` (Bool) and `done_ts` (ms) appear only on completed items; absent
+  means live. `due` is nullable on done items (undated commitments
+  complete too; recurring done rows always send `due:null`). A
+  `kind:"recurring"` done row means "checked off today" — the loop stays
+  open and its next occurrence may also list live; both showing is
+  intended. Completion happens ONLY via chat — the model closes one-shots
+  with CompleteCommitment and checks recurring days off with a habit_done
+  event naming the commitment; the app never writes.
 
 ### B3e. `GET /measurements` (Part A)
 
@@ -537,22 +551,27 @@ cannot use replay. Recovery from dropped streams goes through history sync
 
 Data: `GET /agenda`, held in `AgendaStore`.
 
-- Three list sections:
-  - **"Overdue"** — live items with `overdue == true`. Section omitted
+- Vertically split: REALTIME TASKS (one-shot commitments + calendar
+  events, `kind != "recurring"`) on top, RECURRING HABITS below, in that
+  sequence. Four list sections:
+  - **"Overdue"** — live tasks with `overdue == true`. Section omitted
     entirely when empty.
-  - **"Next 48 hours"** — every other live item. When empty, show a
+  - **"Next 48 hours"** — every other live task. When empty, show a
     centered placeholder: calendar SF symbol, caption "Nothing due in the
-    next 48 hours." (If all sections are empty, only the placeholder
-    shows.)
-  - **"Done"** — items with `done == true`, in server order (newest
+    next 48 hours." (If everything is empty, only the placeholder shows.)
+  - **"Done"** — tasks with `done == true`, in server order (newest
     completion first). Section omitted entirely when empty.
+  - **"Recurring"** — ALL `kind == "recurring"` rows, live and done, in
+    server order (live by fire time first, then done-today newest first).
+    Section omitted entirely when empty.
 - Row layout (all kinds): title in body font, one line, truncating tail;
   below it a caption line with the time. A small SF symbol before the
   title: `checkmark.circle.fill` in `.green` for done rows (any kind);
-  otherwise `calendar` for `calendar`-kind rows, `repeat` for `recurring`
-  rows, and an open `circle` in `.secondary` for plain commitments — open
-  circle vs green check is how done/not-done reads at a glance. No
-  strikethrough; done titles stay in primary color.
+  otherwise `calendar` for `calendar`-kind rows and an open `circle` in
+  `.secondary` for the rest — open circle vs green check is how
+  done/not-done reads at a glance (no `repeat` glyph; the Recurring
+  header already says it). No strikethrough; done titles stay in primary
+  color.
 - Caption formatting rules (implement exactly, using the device's locale
   and time zone):
   - Overdue: `"Overdue — was due " + RelativeDateTimeFormatter` output
@@ -931,6 +950,10 @@ launch-screen artwork; no app icon required (may be added later).
    does. Empty state renders when the server returns no items. Telling the
    chat a task is done moves it to a "Done" section (green check, "Done
    moments ago") on the post-turn refresh; it drops off Today a day later.
+   Recurring habits sit in their own "Recurring" section below the tasks;
+   telling the chat a habit is done flips its circle to a green check for
+   the rest of the local day and silences that day's reminder, while the
+   habit's next occurrence still lists live.
 8. Log tab: quota tiles show remaining vs quota from `/days` (and the
    "Set a quota in chat" state when targets are absent); both heatmaps
    render 12 weeks with correct colors, neutral prehistory, and a ringed
