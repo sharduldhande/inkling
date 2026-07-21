@@ -143,6 +143,10 @@ class AnthropicSDKGateway:
         try:
             async for message in query(prompt=context, options=options):
                 if isinstance(message, AssistantMessage):
+                    # ResultMessage carries no model attr — AssistantMessage is
+                    # where the SDK names the actual model (turn 68 logged the
+                    # bare gateway label; the answer was a live prod query away).
+                    model_used = message.model or model_used
                     for block in message.content:
                         if isinstance(block, TextBlock) and block.text:
                             # One reply phase only. The model reliably writes
@@ -176,7 +180,6 @@ class AnthropicSDKGateway:
                         )
                         input_tokens = int(get("input_tokens", 0) or 0)
                         output_tokens = int(get("output_tokens", 0) or 0)
-                    model_used = getattr(message, "model", None) or model_used
         except InferenceError:
             raise
         except Exception as exc:

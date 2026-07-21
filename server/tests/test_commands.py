@@ -358,6 +358,51 @@ async def test_commitment_id_only_fits_recurring_habit_kinds(db: Database):
     assert "not found" in verdict.rejected[0].reason
 
 
+async def test_dropped_commitment_closes_as_cancelled_not_done(db: Database):
+    """outcome='dropped' must never masquerade as an accomplishment: it lands
+    as status='cancelled', which /agenda's done pane filters out."""
+    await _run_turn(db, USER_A, [{"type": "UpsertCommitment", "title": "old plan"}])
+    await _run_turn(
+        db,
+        USER_A,
+        [
+            {
+                "type": "CompleteCommitment",
+                "id": 1,
+                "expected_version": 1,
+                "outcome": "dropped",
+                "reason": "user said they are abandoning this",
+            }
+        ],
+    )
+    rows = await _rows(db, USER_A, "SELECT * FROM commitments")
+    assert rows[0]["status"] == "cancelled"
+    note = (
+        await _rows(
+            db, USER_A, "SELECT note FROM events WHERE kind = 'system'"
+        )
+    )[0]["note"]
+    assert note.startswith("dropped commitment")
+
+
+def test_complete_commitment_without_outcome_fails_parse():
+    """Closing is a deliberate verdict — the schema refuses to default it."""
+    notes: list[str] = []
+    parsed = parse_commands(
+        [
+            {
+                "type": "CompleteCommitment",
+                "id": 1,
+                "expected_version": 1,
+                "reason": "deadline passed",
+            }
+        ],
+        notes=notes,
+    )
+    assert parsed == []
+    assert notes, "the rejection must surface as a §9.2 note, not silence"
+
+
 # --- UpsertCommitment -------------------------------------------------------
 
 
@@ -487,6 +532,7 @@ async def test_complete_closes_commitment_and_records_why(db: Database):
                 "type": "CompleteCommitment",
                 "id": 1,
                 "expected_version": 1,
+                "outcome": "done",
                 "reason": "went this morning",
             }
         ],
@@ -504,12 +550,14 @@ async def test_completing_an_already_done_commitment_is_rejected(db: Database):
     await _run_turn(
         db,
         USER_A,
-        [{"type": "CompleteCommitment", "id": 1, "expected_version": 1, "reason": "y"}],
+        [{"type": "CompleteCommitment", "id": 1, "expected_version": 1,
+          "outcome": "done", "reason": "y"}],
     )
     verdict = await _validate(
         db,
         USER_A,
-        [{"type": "CompleteCommitment", "id": 1, "expected_version": 2, "reason": "y"}],
+        [{"type": "CompleteCommitment", "id": 1, "expected_version": 2,
+          "outcome": "done", "reason": "y"}],
     )
     assert "already done" in verdict.rejected[0].reason
 
@@ -534,6 +582,7 @@ async def test_complete_is_blocked_while_working_state_shows_open_children(
                 "type": "CompleteCommitment",
                 "id": 1,
                 "expected_version": 1,
+                "outcome": "done",
                 "reason": "done I think",
             }
         ],

@@ -84,6 +84,14 @@ async def seeded(migrated: str, dsn: str):
             """
             INSERT INTO commitments
               (user_id, title, due_at, status, source)
+            VALUES (%s, 'Dropped plan', %s, 'cancelled', 'conversation')
+            """,
+            (USER_A, now - timedelta(hours=2)),
+        )
+        conn.execute(
+            """
+            INSERT INTO commitments
+              (user_id, title, due_at, status, source)
             VALUES (%s, 'Beyond the window', %s, 'open', 'conversation')
             """,
             (USER_A, now + timedelta(hours=49)),
@@ -313,6 +321,9 @@ async def test_agenda_merges_typed_items_in_time_order(client, seeded):
     }, "one done row per habit, stamped by TODAY's event, not the stale one"
     assert not any(item["title"] == "Done long ago" for item in items)
     assert not any(item["title"] == "Beyond the window" for item in items)
+    assert not any(
+        item["title"] == "Dropped plan" for item in items
+    ), "cancelled (dropped) commitments never surface — no false checkmarks"
 
 
 async def test_measurements_are_typed_recent_and_newest_first(client, seeded):

@@ -317,16 +317,20 @@ async def _apply_upsert_commitment(
 async def _apply_complete_commitment(
     conn: AsyncConnection, cmd: CompleteCommitment, *, user_id: str, turn_id: int
 ) -> dict[str, Any]:
+    # outcome 'done' is the user's accomplishment; 'dropped' is the user's
+    # abandonment → 'cancelled', which /agenda never surfaces (no false ✓).
+    status = "done" if cmd.outcome == "done" else "cancelled"
     row = await commitments_q.set_status(
-        conn, commitment_id=cmd.id, version=cmd.expected_version, status="done"
+        conn, commitment_id=cmd.id, version=cmd.expected_version, status=status
     )
     if row is None:
         raise ConcurrentModification(f"commitment {cmd.id} changed mid-turn")
-    # A reminder for a thing already done is noise: retire any occurrence that
+    # A reminder for a closed thing is noise: retire any occurrence that
     # hasn't surfaced yet (§4.6 skipped_done) so §10 never fires it.
     skipped = await commitments_q.skip_unsurfaced_occurrences(conn, cmd.id)
     # The reason is the durable record of *why* this closed: the commitment row
     # only remembers that it did.
+    closed = "completed" if cmd.outcome == "done" else "dropped"
     await events_q.insert(
         conn,
         user_id=user_id,
@@ -335,13 +339,14 @@ async def _apply_complete_commitment(
         habit_id=None,
         value_num=None,
         unit=None,
-        note=f"completed commitment {cmd.id} ({row['title']}): {cmd.reason}",
+        note=f"{closed} commitment {cmd.id} ({row['title']}): {cmd.reason}",
         source="agent",
         turn_id=turn_id,
     )
     return {
         "commitment_id": cmd.id,
         "version": int(row["version"]),
+        "outcome": cmd.outcome,
         "occurrences_skipped": skipped,
     }
 

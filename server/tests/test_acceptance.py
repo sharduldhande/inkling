@@ -63,7 +63,7 @@ async def test_module1_hw2_closure_yields_a_question_not_closure(db: Database):
     gateway = StubGateway(
         reply="Done! Closed module 1.",
         commands=parse_commands([{
-            "type": "CompleteCommitment", "id": 1,
+            "type": "CompleteCommitment", "id": 1, "outcome": "done",
             "expected_version": 1, "reason": "user said did module 1",
         }]),
     )

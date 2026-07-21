@@ -151,6 +151,11 @@ class CompleteCommitment(_CommandBase):
     type: Literal["CompleteCommitment"]
     id: int
     expected_version: int
+    # done = the USER said it happened; dropped = the USER explicitly
+    # abandoned it. Required — closing is always a deliberate verdict, and a
+    # passed deadline is neither: overdue work stays open (turn 68 closed a
+    # lapsed extra-credit window as 'done' and the app showed a false ✓).
+    outcome: Literal["done", "dropped"]
     reason: str
 
 

@@ -233,7 +233,7 @@ async def test_completing_a_commitment_retires_its_pending_occurrences(db: Datab
     async with db.with_tenant(USER_A) as conn:
         user = await users_q.get(conn, USER_A)
         [cmd] = parse_commands([{
-            "type": "CompleteCommitment", "id": commitment_id,
+            "type": "CompleteCommitment", "id": commitment_id, "outcome": "done",
             "expected_version": 1, "reason": "did it early",
         }])
         detail = await apply_command(conn, cmd, user=user, turn_id=1, index=0)
