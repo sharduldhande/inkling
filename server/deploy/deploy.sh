@@ -8,7 +8,9 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/sharduldhande/inkling-server.git}"
 BASE="${INKLING_BASE:-$HOME/inkling}"
 ENV_FILE="$HOME/.inkling/env"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8899/health}"
+# 8900 is inkling; 8899 belongs to v1 (habit-enforcer) — a health check
+# against it fails every deploy into a spurious rollback.
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8900/health}"
 SERVICE="inkling"
 
 mkdir -p "$BASE/releases"
