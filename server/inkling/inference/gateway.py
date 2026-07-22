@@ -81,6 +81,10 @@ class InferenceGateway(Protocol):
         tools: list[ToolSchema],  # emit_commands (§9) + read tools (recall)
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler] | None = None,
+        # Trigger source ("chat", "wakeup", …): a latency hint, not a contract
+        # change — chat has a human watching the stream, so adapters may trade
+        # reasoning depth for time-to-first-token on it.
+        source: str = "chat",
     ) -> TurnResult: ...
 
 
@@ -147,6 +151,7 @@ class StubGateway:
         tools: list[ToolSchema],
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler] | None = None,
+        source: str = "chat",
     ) -> TurnResult:
         recall_results = []
         handler = (tool_handlers or {}).get("recall")
@@ -160,6 +165,7 @@ class StubGateway:
                 "context": context,
                 "tools": tools,
                 "recall_results": recall_results,
+                "source": source,
             }
         )
         for i in range(0, len(self.reply), self.chunk_size):

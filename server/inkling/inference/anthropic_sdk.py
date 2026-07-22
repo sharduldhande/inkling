@@ -10,12 +10,17 @@ turn that off. Tools are restricted to the single in-process emit_commands
 tool (an SDK MCP server), and permission_mode="dontAsk" denies anything not
 explicitly allowed — the model gets no filesystem, no bash, no network.
 
-Streaming granularity is block-level, not token-level: the SDK yields complete
-AssistantMessage blocks, so on_text_delta typically fires once per prose block.
-Coarser than the Messages API path, allowed by §7 (the turn_events contract is
-unchanged); include_partial_messages could refine this later.
+Streaming is token-level (include_partial_messages), batched into ~quarter-
+second chunks so turn_events stays at a handful of rows per second rather than
+one per token (§7's turn_events contract is unchanged). The turn also ends as
+soon as the reply text and the emit_commands call both exist — the model's
+habitual post-tool restatement (discarded anyway) is never generated, saving a
+whole model request per turn. Chat-source turns run at effort="low": the reply
+is conversational, and think time is pure added latency in front of the first
+visible token.
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -36,6 +41,10 @@ log = logging.getLogger(__name__)
 # bounds it so a confused model can't loop the subscription forever.
 MAX_TURNS = 4
 
+# Live text is batched by time window: one on_text_delta call (= one
+# turn_events row, one DB transaction in the worker) per flush, not per token.
+FLUSH_SECONDS = 0.25
+
 
 class AnthropicSDKGateway:
     def __init__(self, config_dir: str, *, model: str | None = None):
@@ -51,6 +60,7 @@ class AnthropicSDKGateway:
         tools: list[ToolSchema],
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler] | None = None,
+        source: str = "chat",
     ) -> TurnResult:
         return await with_one_retry(
             lambda: self._run(
@@ -58,6 +68,7 @@ class AnthropicSDKGateway:
                 context=context,
                 on_text_delta=on_text_delta,
                 tool_handlers=tool_handlers or {},
+                source=source,
             )
         )
 
@@ -68,12 +79,14 @@ class AnthropicSDKGateway:
         context: str,
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler],
+        source: str,
     ) -> TurnResult:
         # Imported here so the api_key/stub paths never require the package.
         from claude_agent_sdk import (
             AssistantMessage,
             ClaudeAgentOptions,
             ResultMessage,
+            StreamEvent,
             TextBlock,
             ToolUseBlock,
             create_sdk_mcp_server,
@@ -133,6 +146,12 @@ class AnthropicSDKGateway:
             env={"CLAUDE_CONFIG_DIR": self.config_dir},
             max_turns=MAX_TURNS,
             model=self.model,
+            include_partial_messages=True,
+            # Chat is latency-sensitive: the user is watching a stream, and
+            # think time lands entirely before the first visible token. Other
+            # sources (wakeup, occurrence, consolidation) keep the model's
+            # default adaptive thinking — nobody is waiting on those.
+            effort="low" if source == "chat" else None,
         )
 
         text_parts: list[str] = []
@@ -140,21 +159,64 @@ class AnthropicSDKGateway:
         input_tokens = 0
         output_tokens = 0
 
+        loop = asyncio.get_running_loop()
+        buffer: list[str] = []
+        last_flush = loop.time()
+        streamed = False  # any live text_delta seen (partial-message path)
+
+        async def flush() -> None:
+            nonlocal last_flush
+            if buffer:
+                chunk = "".join(buffer)
+                buffer.clear()
+                text_parts.append(chunk)
+                await on_text_delta(chunk)
+            last_flush = loop.time()
+
+        # Break-out needs an explicit aclose(): abandoning an async generator
+        # only schedules cleanup at GC time, which would leave the CLI
+        # subprocess running (and generating the restatement we broke out to
+        # avoid) for an unbounded while.
+        stream = query(prompt=context, options=options)
         try:
-            async for message in query(prompt=context, options=options):
-                if isinstance(message, AssistantMessage):
+            async for message in stream:
+                # Early exit: the reply exists and emit_commands has run, so
+                # the turn has everything it will ever contribute. What remains
+                # is the model restating the reply post-tool (seen on every
+                # live SDK turn, discarded on arrival before this existed) —
+                # end the turn instead of paying a model request for it. Costs
+                # the ResultMessage: usage stays 0 on early-exit turns.
+                if emitted and (text_parts or buffer):
+                    await flush()
+                    break
+                if isinstance(message, StreamEvent):
+                    event = message.event
+                    if (
+                        message.parent_tool_use_id is None
+                        and event.get("type") == "content_block_delta"
+                        and event.get("delta", {}).get("type") == "text_delta"
+                    ):
+                        streamed = True
+                        buffer.append(event["delta"]["text"])
+                        if loop.time() - last_flush >= FLUSH_SECONDS:
+                            await flush()
+                elif isinstance(message, AssistantMessage):
                     # ResultMessage carries no model attr — AssistantMessage is
                     # where the SDK names the actual model (turn 68 logged the
                     # bare gateway label; the answer was a live prod query away).
                     model_used = message.model or model_used
+                    await flush()
                     for block in message.content:
                         if isinstance(block, TextBlock) and block.text:
-                            # One reply phase only. The model reliably writes
-                            # a reply, calls emit_commands, then restates the
-                            # reply (verbatim or rephrased) no matter what the
-                            # prompt says — seen on every live SDK turn. Keep
-                            # the first non-empty phase: post-tool text counts
-                            # only when the model said nothing beforehand.
+                            # Already delivered token-by-token; the assembled
+                            # block would double every reply.
+                            if streamed:
+                                continue
+                            # Fallback path (no partial events, e.g. an older
+                            # CLI): block-level streaming, one reply phase only
+                            # — the model restates the reply post-tool no
+                            # matter what the prompt says. Keep the first
+                            # non-empty phase.
                             if emitted and text_parts:
                                 log.debug("dropping post-emit restatement")
                                 continue
@@ -186,6 +248,11 @@ class AnthropicSDKGateway:
             # SDK/transport failures (CLI missing, connection lost). Retryable:
             # the CLI is respawned per call, so transient failures can clear.
             raise InferenceError(f"{type(exc).__name__}: {exc}", retryable=True) from exc
+        finally:
+            try:
+                await stream.aclose()
+            except Exception:
+                log.debug("sdk stream close raised", exc_info=True)
 
         if not emitted:
             log.warning("model never called emit_commands; treating as no commands")

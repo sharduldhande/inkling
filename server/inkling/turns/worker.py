@@ -189,11 +189,14 @@ class Worker:
         lease_lost = asyncio.Event()
         heart = asyncio.create_task(self._heartbeat(turn_id, lease_lost))
         seq = 0
+        first_text_at: float | None = None
         try:
             system, context = await self._assemble_context(trigger)
 
             async def on_text_delta(text: str) -> None:
-                nonlocal seq
+                nonlocal seq, first_text_at
+                if first_text_at is None:
+                    first_text_at = asyncio.get_running_loop().time() - started
                 seq += 1
                 await self._emit(
                     trigger_id, turn_id, seq, "text_delta", {"text": text}
@@ -214,6 +217,7 @@ class Worker:
                     tool_handlers={
                         "recall": make_recall_handler(self.db, self.user_id)
                     },
+                    source=trigger["source"],
                 )
             )
             lease_waiter = asyncio.create_task(lease_lost.wait())
@@ -268,10 +272,11 @@ class Worker:
             # commit.py the accept/reject split; this is the roll-up).
             log.info(
                 "turn %s done: user=%s trigger=%s source=%s model=%s "
-                "commands=%d duration=%.1fs",
+                "commands=%d duration=%.1fs first_text=%s",
                 turn_id, self.user_id, trigger_id, trigger["source"],
                 result.model, len(result.commands),
                 asyncio.get_running_loop().time() - started,
+                f"{first_text_at:.1f}s" if first_text_at is not None else "-",
             )
         except Exception as exc:
             log.exception("turn %s failed for user %s", turn_id, self.user_id)
@@ -320,8 +325,9 @@ class Worker:
         turn_events can never be missing text it already saw live.
 
         One transaction per delta: correct, and fine for sentence-sized deltas,
-        but it makes stream cost linear in delta count. If a real adapter emits
-        token-sized deltas this wants batching by time window.
+        but it makes stream cost linear in delta count. Adapters that stream
+        token-level (anthropic_sdk) batch deltas by time window before calling
+        this, so the row rate stays bounded regardless of token rate.
         """
         async with self.db.with_tenant(self.user_id) as conn:
             await turns_q.append_event(

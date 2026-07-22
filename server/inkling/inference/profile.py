@@ -34,6 +34,7 @@ class ProfileRoutingGateway:
         tools: list[ToolSchema],
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler] | None = None,
+        source: str = "chat",
     ) -> TurnResult:
         async with self.db.with_tenant(user_id) as conn:
             cur = await conn.execute(
@@ -75,4 +76,5 @@ class ProfileRoutingGateway:
             tools=tools,
             on_text_delta=on_text_delta,
             tool_handlers=tool_handlers,
+            source=source,
         )

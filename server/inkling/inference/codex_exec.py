@@ -106,6 +106,7 @@ class CodexExecGateway:
         tools: list[ToolSchema],
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, Any] | None = None,
+        source: str = "chat",  # accepted for the protocol; no per-source tuning here
     ) -> TurnResult:
         # A one-shot subprocess has no mid-turn tool channel: recall is
         # unavailable on this adapter, and §8's deterministic retrieval gate

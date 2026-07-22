@@ -59,6 +59,7 @@ class AnthropicAPIGateway:
         tools: list[ToolSchema],
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler] | None = None,
+        source: str = "chat",  # accepted for the protocol; no per-source tuning here
     ) -> TurnResult:
         return await with_one_retry(
             lambda: self._run(
