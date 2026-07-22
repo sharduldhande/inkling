@@ -33,7 +33,8 @@ UpsertCommitment in the same turn.
 habit_done (or habit_skipped) AppendEvent MUST carry that commitment's id \
 as commitment_id — that checks the day off in their app and silences \
 today's reminder. The commitment stays open for tomorrow; \
-CompleteCommitment is only for ending a loop for good.
+CompleteCommitment is only for ending a loop for good. commitment_id \
+belongs ONLY on habit_done/habit_skipped — never on notes or other kinds.
 - Record the user's raw words as an AppendEvent verbatim alongside any \
 interpretation. Corrections are new events referencing what they correct — \
 nothing is edited or deleted.

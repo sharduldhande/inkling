@@ -18,9 +18,18 @@ habitual post-tool restatement (discarded anyway) is never generated, saving a
 whole model request per turn. Chat-source turns run at effort="low": the reply
 is conversational, and think time is pure added latency in front of the first
 visible token.
+
+emit_commands validates mid-turn when the worker provides its
+"validate_commands" handler: rejection reasons become the tool result, the
+model corrects and re-emits during the turn, and only accepted commands reach
+the TurnResult — so the user sees the fixed outcome, not a "(couldn't
+complete …)" §9.2 note after the fact. TTFT is untouched (the reply streamed
+before the emit); the correction round costs one extra model request only on
+turns that actually rejected something.
 """
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -98,6 +107,11 @@ class AnthropicSDKGateway:
         # (different users, different Worker tasks) never share state.
         raw_commands: list[Any] = []
         emitted = False
+        # False after an emit whose commands were (partly) rejected: the early
+        # exit below must not fire until the model has re-emitted clean —
+        # cutting the turn there would strand the correction round.
+        emit_clean = False
+        validator = tool_handlers.get("validate_commands")
 
         # Full JSON schema, not {"commands": list}: with a bare untyped list
         # the model guesses field names, and (pre extra=forbid) a wrong guess
@@ -108,14 +122,43 @@ class AnthropicSDKGateway:
             "Record this turn's state-changing commands. Call exactly once per "
             "turn; pass an empty list if the turn changes nothing. Text you "
             "write after this call is discarded unless you wrote none before "
-            "it — write your reply first, then call this.",
+            "it — write your reply first, then call this. If the result lists "
+            "rejections, call it once more with corrected replacements for "
+            "only the rejected commands — everything recorded stays recorded.",
             commands_json_schema(),
         )
         async def emit_commands(args: dict[str, Any]) -> dict[str, Any]:
-            nonlocal emitted
+            nonlocal emitted, emit_clean
             emitted = True
-            raw_commands.extend(args.get("commands") or [])
-            return {"content": [{"type": "text", "text": "recorded"}]}
+            raw = args.get("commands") or []
+            if validator is None:
+                raw_commands.extend(raw)
+                emit_clean = True
+                return {"content": [{"type": "text", "text": "recorded"}]}
+            try:
+                verdict = json.loads(await validator({"commands": raw}))
+            except Exception:
+                # Validation is an optimisation; commit_turn re-validates
+                # authoritatively. Degrade to record-and-ack, never fail the
+                # tool call over it.
+                log.exception("mid-turn command validation failed; recording raw")
+                raw_commands.extend(raw)
+                emit_clean = True
+                return {"content": [{"type": "text", "text": "recorded"}]}
+            raw_commands.extend(verdict["accepted"])
+            rejections = verdict["rejections"]
+            if not rejections:
+                emit_clean = True
+                return {"content": [{"type": "text", "text": "recorded"}]}
+            emit_clean = False
+            text = (
+                f"{len(verdict['accepted'])} recorded; "
+                f"{len(rejections)} rejected:\n" + "\n".join(rejections) +
+                "\nCall emit_commands again with corrected replacements for "
+                "only the rejected commands — everything recorded stays "
+                "recorded. Do not mention this correction to the user."
+            )
+            return {"content": [{"type": "text", "text": text}]}
 
         sdk_tools = [emit_commands]
         allowed = ["mcp__inkling__emit_commands"]
@@ -180,13 +223,15 @@ class AnthropicSDKGateway:
         stream = query(prompt=context, options=options)
         try:
             async for message in stream:
-                # Early exit: the reply exists and emit_commands has run, so
-                # the turn has everything it will ever contribute. What remains
-                # is the model restating the reply post-tool (seen on every
-                # live SDK turn, discarded on arrival before this existed) —
-                # end the turn instead of paying a model request for it. Costs
-                # the ResultMessage: usage stays 0 on early-exit turns.
-                if emitted and (text_parts or buffer):
+                # Early exit: the reply exists and emit_commands has run CLEAN,
+                # so the turn has everything it will ever contribute. What
+                # remains is the model restating the reply post-tool (seen on
+                # every live SDK turn, discarded on arrival before this
+                # existed) — end the turn instead of paying a model request
+                # for it. A rejected emit holds the exit open for the
+                # correction round. Costs the ResultMessage: usage stays 0 on
+                # early-exit turns.
+                if emitted and emit_clean and (text_parts or buffer):
                     await flush()
                     break
                 if isinstance(message, StreamEvent):
@@ -196,6 +241,12 @@ class AnthropicSDKGateway:
                         and event.get("type") == "content_block_delta"
                         and event.get("delta", {}).get("type") == "text_delta"
                     ):
+                        # One reply phase only: during a correction round the
+                        # model may narrate ("fixed, re-emitting") — none of
+                        # that is for the user, whose reply already streamed.
+                        # Post-emit text counts only when there was none before.
+                        if emitted and text_parts:
+                            continue
                         streamed = True
                         buffer.append(event["delta"]["text"])
                         if loop.time() - last_flush >= FLUSH_SECONDS:

@@ -430,7 +430,8 @@ async def test_a_broken_subscriber_does_not_fail_the_turn(db: Database):
 
 class ExplodingGateway:
     async def run_turn(
-        self, *, user_id, system, context, tools, on_text_delta, tool_handlers=None
+        self, *, user_id, system, context, tools, on_text_delta,
+        tool_handlers=None, source="chat",
     ):
         raise RuntimeError("provider exploded")
 
@@ -470,3 +471,35 @@ async def test_loop_survives_a_failing_turn_and_drains_the_inbox(db: Database):
 
     turns = await _rows(db, USER_A, "SELECT status FROM turns ORDER BY id")
     assert [t["status"] for t in turns] == ["error", "ok"]
+
+
+async def test_emit_validator_splits_accepted_from_rejections(db: Database):
+    """make_emit_validator is the mid-turn §9.2 gate (see anthropic_sdk):
+    rejection reasons go back to the model as the tool result; only accepted
+    commands reach the TurnResult, and they must round-trip parse_commands
+    losslessly or the corrected turn would drop them at commit."""
+    import json
+
+    from inkling.turns.commands import parse_commands
+    from inkling.turns.worker import make_emit_validator
+
+    validator = make_emit_validator(db, USER_A, {"source": "chat", "payload": {}})
+    verdict = json.loads(
+        await validator(
+            {
+                "commands": [
+                    # §9.2 semantic reject: commitment_id on a plain note
+                    {"type": "AppendEvent", "kind": "note", "note": "M3 L8",
+                     "commitment_id": 1},
+                    # schema reject: wrong field names entirely
+                    {"type": "LogWeight", "weight_kg": 90},
+                    {"type": "AppendEvent", "kind": "note", "note": "kept"},
+                ]
+            }
+        )
+    )
+
+    assert [c["note"] for c in verdict["accepted"]] == ["kept"]
+    assert any("commitment_id only belongs" in r for r in verdict["rejections"])
+    assert any("LogWeight" in r for r in verdict["rejections"])
+    assert len(parse_commands(verdict["accepted"])) == 1

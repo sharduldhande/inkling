@@ -9,6 +9,7 @@ PgBouncer transaction mode makes session-scoped primitives unreliable.
 """
 
 import asyncio
+import json
 import logging
 import os
 import socket
@@ -19,6 +20,7 @@ from typing import Any
 from inkling.db.client import Database
 from inkling.db.queries import triggers as triggers_q
 from inkling.db.queries import turns as turns_q
+from inkling.db.queries import users as users_q
 from inkling.inference.gateway import InferenceGateway, emit_commands_tool
 from inkling.jobs.consolidate import (
     assemble_consolidation_context,
@@ -31,11 +33,13 @@ from inkling.turns.commands import (
     SnoozeCommitment,
     UpsertCommitment,
 )
+from inkling.turns.commands import parse_commands
 from inkling.turns.commit import commit_turn
 from inkling.turns.context import assemble_context
 from inkling.turns.ingestion import assemble_ingestion_context, is_ingestion_trigger
 from inkling.turns.recall import make_recall_handler, recall_tool
 from inkling.turns.stream import StreamEvent
+from inkling.turns.validate import validate_commands
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +60,51 @@ Subscriber = Callable[[StreamEvent], Awaitable[None]]
 
 def new_worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+
+
+def make_emit_validator(
+    db: Database, user_id: str, trigger: dict[str, Any]
+) -> Callable[[dict[str, Any]], Awaitable[str]]:
+    """Mid-turn §9.2 validation for emit_commands (adapter-optional).
+
+    Adapters that can talk back mid-turn (anthropic_sdk) call this from their
+    emit_commands handler: the rejection reasons become the tool result, so the
+    model corrects and re-emits *during* the turn instead of the user reading a
+    "(couldn't complete …)" note after it. Same short-tenant-transaction shape
+    as recall (§5.3 forbids a tx held ACROSS inference, not reads within it),
+    same validate_commands gates commit_turn applies — which stays the
+    authoritative backstop, since state can move between this check and commit.
+
+    Returns JSON {"accepted": [command dicts], "rejections": [reasons]}: the
+    adapter records only the accepted commands, so a rejected-then-corrected
+    command is never double-validated into a user-facing note at commit.
+    """
+    consolidation = is_consolidation_trigger(trigger)
+    ingestion = is_ingestion_trigger(trigger)
+
+    async def validate(args: dict[str, Any]) -> str:
+        notes: list[str] = []
+        commands = parse_commands(args.get("commands") or [], notes=notes)
+        async with db.with_tenant(user_id) as conn:
+            user = await users_q.get(conn, user_id)
+            assert user is not None  # a turn is running, so its user exists
+            verdict = await validate_commands(
+                conn,
+                user=user,
+                commands=commands,
+                consolidation=consolidation,
+                ingestion=ingestion,
+            )
+        return json.dumps(
+            {
+                "accepted": [
+                    c.model_dump(mode="json") for c in verdict.accepted
+                ],
+                "rejections": notes + [r.note() for r in verdict.rejected],
+            }
+        )
+
+    return validate
 
 
 class LeaseLost(Exception):
@@ -215,7 +264,10 @@ class Worker:
                     on_text_delta=on_text_delta,
                     # Fresh handler per turn: the recall budget is per-turn.
                     tool_handlers={
-                        "recall": make_recall_handler(self.db, self.user_id)
+                        "recall": make_recall_handler(self.db, self.user_id),
+                        "validate_commands": make_emit_validator(
+                            self.db, self.user_id, trigger
+                        ),
                     },
                     source=trigger["source"],
                 )
