@@ -315,7 +315,11 @@ class AnthropicSDKGateway:
                         # model may narrate ("fixed, re-emitting") — none of
                         # that is for the user, whose reply already streamed.
                         # Post-emit text counts only when there was none before.
-                        if emitted and text_parts:
+                        # `buffer` matters: a reply shorter than the flush
+                        # window is still unflushed when post-emit deltas
+                        # arrive, and checking text_parts alone let phase two
+                        # concatenate onto it ("…that one.Deleted —", live).
+                        if emitted and (text_parts or buffer):
                             continue
                         streamed = True
                         buffer.append(event["delta"]["text"])
