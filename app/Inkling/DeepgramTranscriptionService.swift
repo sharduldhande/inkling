@@ -11,10 +11,21 @@ final class DeepgramTranscriptionService {
     var isRecording = false
     var finalizedText = ""
     var interimText = ""
-    /// Brief, non-blocking failure hint ("Transcription failed"). Cleared on
-    /// the next start.
-    var errorHint: String?
+    /// Brief, non-blocking failure hint ("Transcription failed"). Auto-clears
+    /// after a few seconds — a lingering hint reads as a broken input bar.
+    var errorHint: String? {
+        didSet {
+            guard errorHint != nil else { return }
+            hintClearTask?.cancel()
+            hintClearTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
+                self?.errorHint = nil
+            }
+        }
+    }
     var permissionDenied = false
+    @ObservationIgnored private var hintClearTask: Task<Void, Never>?
 
     @ObservationIgnored private var engine: AVAudioEngine?
     @ObservationIgnored private var socket: URLSessionWebSocketTask?

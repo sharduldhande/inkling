@@ -84,6 +84,22 @@ struct ChatView: View {
                             showNewPill = true
                         }
                     }
+                    .overlay(alignment: .bottom) {
+                        // Floating glass pill over the transcript, like the
+                        // "New" pill — a layout row here carves an opaque
+                        // band out of the window background under the bar.
+                        if let hint = hintText {
+                            Text(hint.text)
+                                .font(.caption)
+                                .foregroundStyle(hint.isError ? Color.red : Color.secondary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .glassEffect()
+                                .padding(.bottom, 8)
+                                .transition(.opacity)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.2), value: hintText?.text)
                     .overlay(alignment: .bottomTrailing) {
                         if showNewPill {
                             Button {
@@ -101,26 +117,52 @@ struct ChatView: View {
                     }
                 }
             }
-
-            // Above the input bar: anything below it sits behind the
-            // floating tab bar and is invisible.
-            if showNoKeyHint {
-                Text("Add a Deepgram API key in Settings.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
-                    .transition(.opacity)
+            // safeAreaInset, not a VStack row: the transcript scrolls UNDER
+            // the glass bar (true floating); a sibling row leaves the bar
+            // sitting on an opaque strip of window background.
+            .safeAreaInset(edge: .bottom) { inputBar }
+        }
+        .onChange(of: transcriber.liveTranscript) { _, live in
+            // Live words appear in the field as Deepgram streams results.
+            guard transcriber.isRecording else { return }
+            store.draft = draftBeforeRecording.isEmpty
+                ? live
+                : (live.isEmpty ? draftBeforeRecording : draftBeforeRecording + " " + live)
+        }
+        .onChange(of: transcriber.permissionDenied) { _, denied in
+            if denied { showMicDeniedAlert = true }
+        }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPicker { jpeg in
+                store.sendPhoto(jpeg)
             }
-            if let hint = transcriber.errorHint {
-                Text(hint)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.top, 4)
-                    .transition(.opacity)
+            .ignoresSafeArea()
+        }
+        .alert("Microphone access is off", isPresented: $showMicDeniedAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
             }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Allow microphone access for Inkling in iOS Settings to use voice input.")
+        }
+        .alert("No camera available on this device.", isPresented: $showNoCameraAlert) {
+            Button("OK", role: .cancel) { }
+        }
+        .animation(.easeInOut(duration: 0.2), value: store.healthCaption)
+        .onChange(of: store.focusRequestID) { _, _ in
+            inputFocused = true
+        }
+        .onAppear {
+            if !store.draft.isEmpty { inputFocused = true }
+        }
+    }
 
-            GlassEffectContainer {
-                HStack(alignment: .bottom, spacing: 10) {
+    private var inputBar: some View {
+        GlassEffectContainer {
+            HStack(alignment: .bottom, spacing: 10) {
                     if transcriber.isRecording {
                         Button {
                             cancelRecording()
@@ -173,47 +215,15 @@ struct ChatView: View {
                     .disabled(store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isTurnInFlight || transcriber.isRecording)
                     .accessibilityLabel("Send")
                 }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 9)
         }
-        .onChange(of: transcriber.liveTranscript) { _, live in
-            // Live words appear in the field as Deepgram streams results.
-            guard transcriber.isRecording else { return }
-            store.draft = draftBeforeRecording.isEmpty
-                ? live
-                : (live.isEmpty ? draftBeforeRecording : draftBeforeRecording + " " + live)
-        }
-        .onChange(of: transcriber.permissionDenied) { _, denied in
-            if denied { showMicDeniedAlert = true }
-        }
-        .fullScreenCover(isPresented: $showCamera) {
-            CameraPicker { jpeg in
-                store.sendPhoto(jpeg)
-            }
-            .ignoresSafeArea()
-        }
-        .alert("Microphone access is off", isPresented: $showMicDeniedAlert) {
-            Button("Open Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
-                }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Allow microphone access for Inkling in iOS Settings to use voice input.")
-        }
-        .alert("No camera available on this device.", isPresented: $showNoCameraAlert) {
-            Button("OK", role: .cancel) { }
-        }
-        .animation(.easeInOut(duration: 0.2), value: store.healthCaption)
-        .animation(.easeInOut(duration: 0.2), value: showNoKeyHint)
-        .onChange(of: store.focusRequestID) { _, _ in
-            inputFocused = true
-        }
-        .onAppear {
-            if !store.draft.isEmpty { inputFocused = true }
-        }
+        .padding(.horizontal)
+        .padding(.vertical, 9)
+    }
+
+    private var hintText: (text: String, isError: Bool)? {
+        if let hint = transcriber.errorHint { return (hint, true) }
+        if showNoKeyHint { return ("Add a Deepgram API key in Settings.", false) }
+        return nil
     }
 
     // MARK: - Mic (§C3: press-and-hold OR tap-to-toggle, one button)
