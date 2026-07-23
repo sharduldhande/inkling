@@ -276,6 +276,11 @@ struct ChatView: View {
     private var micButton: some View {
         Image(systemName: "mic.fill")
             .font(.title3)
+            // symbolEffect pulses the GLYPH only. The previous
+            // scaleEffect + .animation(.repeatForever) leaked into layout:
+            // once the keyboard moved the bar, the forever-animation applied
+            // to the mic's position and it drifted around the transcript.
+            .symbolEffect(.pulse, isActive: transcriber.isRecording)
             .frame(width: 26, height: 26)
             .padding(9)
             .foregroundStyle(
@@ -284,13 +289,6 @@ struct ChatView: View {
             .glassEffect(
                 transcriber.isRecording ? .regular.tint(.red) : .regular,
                 in: Circle()
-            )
-            .scaleEffect(transcriber.isRecording ? 1.08 : 1)
-            .animation(
-                transcriber.isRecording
-                    ? .easeInOut(duration: 0.6).repeatForever(autoreverses: true)
-                    : .default,
-                value: transcriber.isRecording
             )
             // The padded glass circle is not hit-testable on its own; without
             // this only the 26pt glyph accepts touches (verified in sim).
