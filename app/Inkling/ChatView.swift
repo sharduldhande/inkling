@@ -104,6 +104,9 @@ struct ChatView: View {
                         }
                     }
                     .animation(.easeInOut(duration: 0.2), value: hintText?.text)
+                    .overlay(alignment: .bottomLeading) {
+                        stagedPhotoChip
+                    }
                     .overlay(alignment: .bottomTrailing) {
                         if showNewPill {
                             Button {
@@ -165,35 +168,44 @@ struct ChatView: View {
         }
     }
 
+    // The staged-photo chip must NOT live inside the safeAreaInset: growing
+    // the inset while the camera cover dismisses displaced the scroll
+    // position and shoved the whole transcript off-screen (user video —
+    // same safe-area-mutation gremlin as the tab-flash saga). It floats
+    // over the transcript instead, like the hint pill.
+    private var stagedPhotoChip: some View {
+        Group {
+            if let staged = store.pendingPhoto, let thumb = UIImage(data: staged) {
+                ZStack(alignment: .topTrailing) {
+                    Image(uiImage: thumb)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 64, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    Button {
+                        store.pendingPhoto = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.body)
+                            .foregroundStyle(.white, .black.opacity(0.6))
+                    }
+                    .offset(x: 7, y: -7)
+                    .accessibilityLabel("Remove photo")
+                }
+                .padding(.leading, 20)
+                .padding(.bottom, 8)
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: store.pendingPhoto != nil)
+    }
+
     private var inputBar: some View {
         GlassEffectContainer {
-            VStack(alignment: .leading, spacing: 8) {
-                if let staged = store.pendingPhoto, let thumb = UIImage(data: staged) {
-                    ZStack(alignment: .topTrailing) {
-                        Image(uiImage: thumb)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 64, height: 64)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        Button {
-                            store.pendingPhoto = nil
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.body)
-                                .foregroundStyle(.white, .black.opacity(0.6))
-                        }
-                        .offset(x: 7, y: -7)
-                        .accessibilityLabel("Remove photo")
-                    }
-                    .padding(.leading, 4)
-                    .transition(.scale.combined(with: .opacity))
-                }
-                inputRow
-            }
+            inputRow
         }
         .padding(.horizontal)
         .padding(.vertical, 9)
-        .animation(.easeInOut(duration: 0.15), value: store.pendingPhoto != nil)
     }
 
     private var inputRow: some View {
