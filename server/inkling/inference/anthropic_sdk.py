@@ -48,8 +48,10 @@ from inkling.turns.commands import commands_json_schema, parse_commands
 log = logging.getLogger(__name__)
 
 # The model runs its inner agent loop (reply → emit_commands → wrap up); this
-# bounds it so a confused model can't loop the subscription forever.
+# bounds it so a confused model can't loop the subscription forever. Photo
+# turns get headroom for scan_barcode → lookup_product before the reply.
 MAX_TURNS = 4
+MAX_TURNS_WITH_IMAGES = 6
 
 # Live text is batched by time window: one on_text_delta call (= one
 # turn_events row, one DB transaction in the worker) per flush, not per token.
@@ -167,6 +169,37 @@ class AnthropicSDKGateway:
         sdk_tools = [emit_commands]
         allowed = ["mcp__inkling__emit_commands"]
 
+        scan_handler = tool_handlers.get("scan_barcode")
+        if scan_handler is not None:
+            @tool(
+                "scan_barcode",
+                "Machine-decode any barcode in the attached photo. Returns "
+                "each code found with its symbology (the UPC/EAN is the "
+                "product code; DataMatrix/QR are usually production codes).",
+                {},
+            )
+            async def scan_barcode(args: dict[str, Any]) -> dict[str, Any]:
+                result = await scan_handler(args)
+                return {"content": [{"type": "text", "text": result}]}
+
+            sdk_tools.append(scan_barcode)
+            allowed.append("mcp__inkling__scan_barcode")
+
+        lookup_handler = tool_handlers.get("lookup_product")
+        if lookup_handler is not None:
+            @tool(
+                "lookup_product",
+                "Look up a barcode in the food product database. Returns "
+                "product name and nutrition (per serving AND per 100g).",
+                {"barcode": str},
+            )
+            async def lookup_product(args: dict[str, Any]) -> dict[str, Any]:
+                result = await lookup_handler(args)
+                return {"content": [{"type": "text", "text": result}]}
+
+            sdk_tools.append(lookup_product)
+            allowed.append("mcp__inkling__lookup_product")
+
         recall_handler = tool_handlers.get("recall")
         if recall_handler is not None:
             @tool(
@@ -191,7 +224,7 @@ class AnthropicSDKGateway:
             # Deny-by-default: file/bash/web tools are never approved (§7).
             permission_mode="dontAsk",
             env={"CLAUDE_CONFIG_DIR": self.config_dir},
-            max_turns=MAX_TURNS,
+            max_turns=MAX_TURNS_WITH_IMAGES if images else MAX_TURNS,
             model=self.model,
             include_partial_messages=True,
             # Chat is latency-sensitive: the user is watching a stream, and

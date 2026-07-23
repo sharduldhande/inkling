@@ -292,6 +292,25 @@ async def test_photo_ingestion_degrades_when_original_is_gone(db: Database):
     assert "retake" in got.context
 
 
+async def test_barcode_tools_exist_only_on_photo_turns(tmp_path):
+    from inkling.inference.gateway import ImageAttachment
+    from inkling.turns.worker import make_barcode_handlers
+    from tests.test_barcode import BARCODE_PNG
+
+    # No images (every chat/wakeup turn) → the tools don't exist at all.
+    assert make_barcode_handlers(()) == {}
+
+    import base64
+    image = ImageAttachment(
+        media_type="image/png",
+        data_base64=base64.b64encode(BARCODE_PNG).decode("ascii"),
+    )
+    handlers = make_barcode_handlers((image,))
+    assert set(handlers) == {"scan_barcode", "lookup_product"}
+    assert await handlers["scan_barcode"]({}) == "EAN-13: 4006381333931"
+    assert "barcode" in await handlers["lookup_product"]({})  # arg hint
+
+
 async def test_photo_turn_passes_images_to_the_gateway(db: Database, tmp_path):
     path = tmp_path / "photo.png"
     path.write_bytes(_TINY_PNG)

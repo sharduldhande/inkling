@@ -9,6 +9,7 @@ PgBouncer transaction mode makes session-scoped primitives unreliable.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ from inkling.db.queries import triggers as triggers_q
 from inkling.db.queries import turns as turns_q
 from inkling.db.queries import users as users_q
 from inkling.inference.gateway import InferenceGateway, emit_commands_tool
+from inkling.lib import barcode
 from inkling.jobs.consolidate import (
     assemble_consolidation_context,
     is_consolidation_trigger,
@@ -60,6 +62,41 @@ Subscriber = Callable[[StreamEvent], Awaitable[None]]
 
 def new_worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+
+
+def make_barcode_handlers(images: tuple | list) -> dict[str, Any]:
+    """Photo-turn tools (§14): scan the attached image, look a code up.
+
+    Only wired when the turn actually carries images — on every other turn
+    the tools simply don't exist, so the model can't call them. Both return
+    model-facing text and never raise (a failed scan is an honest sentence).
+    """
+    if not images:
+        return {}
+
+    async def scan_barcode(args: dict[str, Any]) -> str:
+        found: list[str] = []
+        for image in images:
+            try:
+                data = base64.b64decode(image.data_base64)
+            except Exception:
+                continue
+            found += [f"{fmt}: {text}" for fmt, text in barcode.decode_all(data)]
+        if not found:
+            return (
+                "no barcode could be machine-decoded from the photo. If you "
+                "can read the printed digits under the bars yourself, those "
+                "ARE the product code — use them."
+            )
+        return "\n".join(found)
+
+    async def lookup_product(args: dict[str, Any]) -> str:
+        code = str(args.get("barcode") or "").strip()
+        if not code:
+            return "pass the barcode digits as {'barcode': '...'}"
+        return await barcode.lookup(code)
+
+    return {"scan_barcode": scan_barcode, "lookup_product": lookup_product}
 
 
 def make_emit_validator(
@@ -269,6 +306,9 @@ class Worker:
                         "validate_commands": make_emit_validator(
                             self.db, self.user_id, trigger
                         ),
+                        # Photo turns only: the model decides whether the
+                        # image warrants a scan/lookup (§14 photo tools).
+                        **make_barcode_handlers(assembled.images),
                     },
                     source=trigger["source"],
                     images=list(assembled.images),
