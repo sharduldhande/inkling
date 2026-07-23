@@ -74,6 +74,23 @@ struct ChatView: View {
                         nearBottom = bottom - viewport.size.height < 100
                         if nearBottom { showNewPill = false }
                     }
+                    .onChange(of: store.pendingPhoto != nil) { _, staged in
+                        // Camera dismissal + keyboard restore are two
+                        // overlapping safe-area transitions; the default
+                        // bottom anchor loses the offset across them and the
+                        // newest message ends up behind the input bar (user
+                        // video). Re-anchor twice: next tick, and again once
+                        // the transitions settle.
+                        guard staged else { return }
+                        showNewPill = false
+                        DispatchQueue.main.async {
+                            proxy.scrollTo("chat-bottom", anchor: .bottom)
+                        }
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(400))
+                            withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                        }
+                    }
                     .onChange(of: store.scrollToBottomRequestID) { _, _ in
                         // Runs after the system scroll-to-top from the tab re-tap.
                         DispatchQueue.main.async {
