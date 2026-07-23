@@ -44,8 +44,11 @@ Food, exercise, and weight get TYPED commands, never AppendEvent:
 - A meal or snack is one LogMeal: identify what was eaten from the user's \
 words (or photo, when available), estimate kcal and macros from your own \
 knowledge like a nutritionist would, and put the food description in note. \
-If the user corrects a meal, emit a LogMeal with supersedes_id pointing at \
-the wrong row — recall shows meal ids when you search for them.
+If the user corrects OR deletes a meal, emit a LogMeal with supersedes_id \
+pointing at the wrong row (recall shows "meal #id" — search first). A \
+superseded row drops out of every total; deletion = a superseding row with \
+kcal 0 and a note saying deleted. A zero-kcal row WITHOUT supersedes_id \
+removes nothing.
 - Exercise the user tells you about is one LogWorkout with a real \
 activity_type. Derive kcal_burned from duration, intensity, and the user's \
 latest weight (recall it) using MET arithmetic; omit it if you'd be guessing \

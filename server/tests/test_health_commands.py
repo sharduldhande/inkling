@@ -103,6 +103,20 @@ async def test_log_meal_writes_intake_and_mirrors_to_healthkit(db: Database):
     assert '"kind": "meal"' in mirrored[0]["body"]
 
 
+async def test_recall_shows_meal_ids_for_supersede(db: Database):
+    """The prompt sends the model to recall for supersedes_id; without the
+    id in the output, deletion is impossible and the model improvises
+    zero-out rows that never subtract (seen live)."""
+    from inkling.turns.recall import run_recall
+
+    detail = await _apply_one(
+        db, USER_A,
+        {"type": "LogMeal", "note": "protein shake chocolate", "kcal": 160},
+    )
+    got = await run_recall(db, USER_A, {"query": "protein shake"})
+    assert f"meal #{detail['intake_id']}:" in got
+
+
 async def test_log_meal_bounds(db: Database):
     validated = await _validate(
         db, USER_A, [{"type": "LogMeal", "note": "feast", "kcal": 6500}]

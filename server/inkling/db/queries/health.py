@@ -196,14 +196,14 @@ async def today_summary(
 # computing it per query keeps the migration surface minimal.
 _FTS_HEALTH = """
 SELECT * FROM (
-  SELECT 'meal' AS entry, occurred_at, note,
+  SELECT 'meal' AS entry, i.id AS row_id, occurred_at, note,
          kcal AS n1, protein_g AS n2, NULL::text AS label
   FROM intake i
   WHERE i.user_id = %(u)s
     AND NOT EXISTS (SELECT 1 FROM intake s WHERE s.supersedes_id = i.id)
     AND to_tsvector('english', note) @@ websearch_to_tsquery('english', %(q)s)
   UNION ALL
-  SELECT 'workout', occurred_at, coalesce(note, ''),
+  SELECT 'workout', id, occurred_at, coalesce(note, ''),
          duration_min, kcal_burned, activity_type
   FROM workouts
   WHERE user_id = %(u)s

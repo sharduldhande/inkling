@@ -163,8 +163,12 @@ async def run_recall(db: Database, user_id: str, args: dict[str, Any]) -> str:
                 f"{round(row['n2'])} g protein" if row["n2"] is not None else None,
             ]
             detail = ", ".join(n for n in nums if n)
+            # The id is load-bearing: LogMeal.supersedes_id is the only way
+            # to correct or delete a meal, and the prompt sends the model
+            # here to find it (it was missing once — the model improvised
+            # zero-out rows that never subtracted; seen live).
             lines.append(
-                f"- [{row['occurred_at'].date()}] meal: {row['note']}"
+                f"- [{row['occurred_at'].date()}] meal #{row['row_id']}: {row['note']}"
                 + (f" ({detail})" if detail else "")
             )
         else:
