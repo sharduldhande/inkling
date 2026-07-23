@@ -252,7 +252,11 @@ struct ChatView: View {
                         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                         .focused($inputFocused)
                         .submitLabel(.send)
-                        .disabled(transcriber.isRecording)
+                        // NOT disabled while recording: disabling a focused
+                        // field resigns first responder and collapses the
+                        // keyboard mid-dictation (ChatGPT keeps it up; so do
+                        // we). Live transcript rewrites the draft as it
+                        // arrives; send stays blocked via canSend.
                         .onSubmit {
                             if canSend { store.send() }
                         }
