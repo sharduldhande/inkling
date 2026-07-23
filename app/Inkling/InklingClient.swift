@@ -129,27 +129,8 @@ struct InklingClient: @unchecked Sendable {
                     }
 
                     await responseOpened()
-                    do {
-                        for try await line in bytes.lines {
-                            guard !line.isEmpty, line.hasPrefix("data: ") else { continue }
-                            let payload = String(line.dropFirst(6))
-                            guard let data = payload.data(using: .utf8),
-                                  let decoded = try? JSONSerialization.jsonObject(with: data),
-                                  let object = decoded as? [String: Any] else {
-                                continue
-                            }
-                            if let text = object["text"] as? String {
-                                continuation.yield(.text(text))
-                            } else if object["done"] as? Bool == true {
-                                continuation.yield(.done)
-                            } else if let exit = object["exit"] as? Int {
-                                continuation.yield(.exit(exit))
-                            }
-                        }
-                        continuation.finish()
-                    } catch {
-                        throw InklingClientError.transport
-                    }
+                    try await Self.relaySSE(bytes, into: continuation)
+                    continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -158,9 +139,83 @@ struct InklingClient: @unchecked Sendable {
         }
     }
 
+    /// Attach to a photo's ingestion-turn stream (GET /documents/{id}/stream)
+    /// — the same SSE frames as /chat, so photo proposals render live.
+    func streamDocument(id: Int) -> AsyncThrowingStream<ChatEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let request = try request(path: "documents/\(id)/stream", authenticated: true)
+                    let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+                    do {
+                        (bytes, response) = try await session.bytes(for: request)
+                    } catch {
+                        throw InklingClientError.transport
+                    }
+                    guard let http = response as? HTTPURLResponse else {
+                        throw InklingClientError.transport
+                    }
+                    if http.statusCode == 401 { throw InklingClientError.unauthorized }
+                    guard http.statusCode == 200 else {
+                        throw InklingClientError.status(http.statusCode)
+                    }
+                    try await Self.relaySSE(bytes, into: continuation)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Fetch a document's stored original (the photo bytes) for re-caching.
+    func fetchDocumentOriginal(id: Int) async throws -> Data {
+        let request = try request(path: "documents/\(id)/original", authenticated: true)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw InklingClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw InklingClientError.transport }
+        if http.statusCode == 401 { throw InklingClientError.unauthorized }
+        guard http.statusCode == 200 else { throw InklingClientError.status(http.statusCode) }
+        return data
+    }
+
+    private static func relaySSE(
+        _ bytes: URLSession.AsyncBytes,
+        into continuation: AsyncThrowingStream<ChatEvent, Error>.Continuation
+    ) async throws {
+        do {
+            for try await line in bytes.lines {
+                guard !line.isEmpty, line.hasPrefix("data: ") else { continue }
+                let payload = String(line.dropFirst(6))
+                guard let data = payload.data(using: .utf8),
+                      let decoded = try? JSONSerialization.jsonObject(with: data),
+                      let object = decoded as? [String: Any] else {
+                    continue
+                }
+                if let text = object["text"] as? String {
+                    continuation.yield(.text(text))
+                } else if object["done"] as? Bool == true {
+                    continuation.yield(.done)
+                } else if let exit = object["exit"] as? Int {
+                    continuation.yield(.exit(exit))
+                }
+            }
+        } catch {
+            throw InklingClientError.transport
+        }
+    }
+
     /// POST /documents with the photo as multipart/form-data (§B8.7 shape).
     /// 202 → parsed body; 4xx with an `error` string → `.rejected(reason)`.
-    func uploadPhoto(jpeg: Data, filename: String) async throws -> DocumentUploadResponse {
+    func uploadPhoto(
+        jpeg: Data, filename: String, caption: String = ""
+    ) async throws -> DocumentUploadResponse {
         var request = try request(path: "documents", authenticated: true)
         request.httpMethod = "POST"
         let boundary = "inkling-\(UUID().uuidString)"
@@ -168,6 +223,12 @@ struct InklingClient: @unchecked Sendable {
             "multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type"
         )
         var body = Data()
+        if !caption.isEmpty {
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"caption\"\r\n\r\n".utf8))
+            body.append(Data(caption.utf8))
+            body.append(Data("\r\n".utf8))
+        }
         body.append(Data("--\(boundary)\r\n".utf8))
         body.append(Data(
             "Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".utf8

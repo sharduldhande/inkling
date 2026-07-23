@@ -1,8 +1,14 @@
 import SwiftUI
+import UIKit
 
 struct MessageBubble: View {
     let message: ChatMessage
     let retry: () -> Void
+    /// Photo bubbles resolve their image through the store (local cache,
+    /// then a server refetch); nil for text-only callers.
+    var loadPhoto: (() async -> UIImage?)? = nil
+
+    @State private var photo: UIImage?
 
     var body: some View {
         HStack {
@@ -22,7 +28,29 @@ struct MessageBubble: View {
     @ViewBuilder
     private var bubble: some View {
         Group {
-            if message.state == .streaming && message.text.isEmpty {
+            if message.isPhoto && loadPhoto != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    Group {
+                        if let photo {
+                            Image(uiImage: photo)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            ProgressView()
+                        }
+                    }
+                    .frame(maxWidth: 220, maxHeight: 260)
+                    .frame(minWidth: 120, minHeight: 90)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    if !message.text.isEmpty, !message.text.hasPrefix("[photo") {
+                        Text(message.text)
+                            .textSelection(.enabled)
+                    }
+                }
+                .task(id: message.photoFile) {
+                    photo = await loadPhoto?()
+                }
+            } else if message.state == .streaming && message.text.isEmpty {
                 TypingDots()
                     .frame(width: 44, height: 18)
             } else {

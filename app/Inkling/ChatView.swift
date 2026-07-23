@@ -43,9 +43,13 @@ struct ChatView: View {
                     ScrollView {
                         LazyVStack(spacing: 12) {
                             ForEach(store.messages) { message in
-                                MessageBubble(message: message) {
-                                    store.retry(message)
-                                }
+                                MessageBubble(
+                                    message: message,
+                                    retry: { store.retry(message) },
+                                    loadPhoto: message.isPhoto
+                                        ? { await store.photo(for: message) }
+                                        : nil
+                                )
                                 .id(message.localID)
                             }
                             Color.clear
@@ -134,7 +138,8 @@ struct ChatView: View {
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker { jpeg in
-                store.sendPhoto(jpeg)
+                // Staged, not sent: the user captions it (or not) and hits send.
+                store.pendingPhoto = jpeg
             }
             .ignoresSafeArea()
         }
@@ -162,6 +167,36 @@ struct ChatView: View {
 
     private var inputBar: some View {
         GlassEffectContainer {
+            VStack(alignment: .leading, spacing: 8) {
+                if let staged = store.pendingPhoto, let thumb = UIImage(data: staged) {
+                    ZStack(alignment: .topTrailing) {
+                        Image(uiImage: thumb)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 64, height: 64)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        Button {
+                            store.pendingPhoto = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.body)
+                                .foregroundStyle(.white, .black.opacity(0.6))
+                        }
+                        .offset(x: 7, y: -7)
+                        .accessibilityLabel("Remove photo")
+                    }
+                    .padding(.leading, 4)
+                    .transition(.scale.combined(with: .opacity))
+                }
+                inputRow
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 9)
+        .animation(.easeInOut(duration: 0.15), value: store.pendingPhoto != nil)
+    }
+
+    private var inputRow: some View {
             HStack(alignment: .bottom, spacing: 10) {
                     if transcriber.isRecording {
                         Button {
@@ -200,7 +235,7 @@ struct ChatView: View {
                         .submitLabel(.send)
                         .disabled(transcriber.isRecording)
                         .onSubmit {
-                            if !store.isTurnInFlight { store.send() }
+                            if canSend { store.send() }
                         }
 
                     micButton
@@ -212,12 +247,18 @@ struct ChatView: View {
                     }
                     .buttonStyle(.glassProminent)
                     .buttonBorderShape(.circle)
-                    .disabled(store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isTurnInFlight || transcriber.isRecording)
+                    .disabled(!canSend)
                     .accessibilityLabel("Send")
                 }
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 9)
+    }
+
+    /// A staged photo can always go (uploads don't occupy the chat turn);
+    /// bare text needs content and a free turn slot.
+    private var canSend: Bool {
+        guard !transcriber.isRecording else { return false }
+        if store.pendingPhoto != nil { return true }
+        let text = store.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !text.isEmpty && !store.isTurnInFlight
     }
 
     private var hintText: (text: String, isError: Bool)? {

@@ -28,12 +28,19 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var voiceOriginated: Bool
     /// Server-provided rejection reason shown under a failed upload (§B8.7).
     var failureReason: String? = nil
+    /// Filename under Documents/photos/ for the thumbnail; text is the
+    /// caption (may be empty). Optional so pre-thumbnail caches decode.
+    var photoFile: String? = nil
 
     var id: UUID { localID }
     var isUser: Bool { role == "user" }
     /// Photo bubbles live outside history-sync healing: their synthetic
     /// serverID ("doc-<id>") never matches a transcript row.
-    var isPhoto: Bool { text.hasPrefix("[photo") }
+    var isPhoto: Bool { photoFile != nil || text.hasPrefix("[photo") }
+    var documentID: Int? {
+        guard let serverID, serverID.hasPrefix("doc-") else { return nil }
+        return Int(serverID.dropFirst(4))
+    }
 }
 
 struct HistoryMessage: Decodable {
@@ -269,11 +276,37 @@ enum CacheFiles {
         for name in [chat, agenda, log] {
             try? FileManager.default.removeItem(at: url(for: name))
         }
+        try? FileManager.default.removeItem(at: photosDirectory)
+    }
+
+    static var photosDirectory: URL {
+        documentsDirectory.appendingPathComponent("photos", isDirectory: true)
+    }
+
+    static func photoURL(_ name: String) -> URL {
+        photosDirectory.appendingPathComponent(name, isDirectory: false)
+    }
+
+    /// Write photo bytes under Documents/photos/; returns the filename.
+    static func savePhoto(_ data: Data) -> String? {
+        let name = "\(UUID().uuidString).jpg"
+        do {
+            try FileManager.default.createDirectory(
+                at: photosDirectory, withIntermediateDirectories: true
+            )
+            try data.write(to: photoURL(name), options: .atomic)
+            return name
+        } catch {
+            return nil
+        }
+    }
+
+    private static var documentsDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 
     private static func url(for name: String) -> URL {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return documents.appendingPathComponent(name, isDirectory: false)
+        documentsDirectory.appendingPathComponent(name, isDirectory: false)
     }
 }
 

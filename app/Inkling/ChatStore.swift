@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 enum HealthCaption: Equatable {
     case online
@@ -11,6 +12,9 @@ enum HealthCaption: Equatable {
 final class ChatStore {
     var messages: [ChatMessage]
     var draft = ""
+    /// A snapped photo staged as an attachment; sent (with the draft as its
+    /// caption) on the next send. Nil once sent or discarded.
+    var pendingPhoto: Data?
     var focusRequestID = UUID()
     var scrollToBottomRequestID = UUID()
     var isTurnInFlight = false
@@ -60,6 +64,14 @@ final class ChatStore {
 
     func send(voiceOriginated: Bool = false) {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let jpeg = pendingPhoto {
+            // Photo (with the text as caption, possibly empty) — independent
+            // of the chat turn pipeline, so isTurnInFlight doesn't gate it.
+            pendingPhoto = nil
+            draft = ""
+            sendPhoto(jpeg, caption: text)
+            return
+        }
         guard !text.isEmpty, !isTurnInFlight else { return }
         draft = ""
         let user = ChatMessage(
@@ -74,9 +86,8 @@ final class ChatStore {
         guard message.state == .failed, !isTurnInFlight,
               let index = messages.firstIndex(where: { $0.localID == message.localID }) else { return }
         if message.isPhoto {
-            guard pendingPhotos[message.localID] != nil else {
-                // Bytes are gone (app relaunched since the failure).
-                messages[index].failureReason = "Photo lost after relaunch — take it again."
+            guard photoBytes(for: message.localID) != nil else {
+                messages[index].failureReason = "Photo bytes lost — take it again."
                 persist()
                 return
             }
@@ -94,14 +105,15 @@ final class ChatStore {
         beginPost(for: message.localID)
     }
 
-    /// §B8.7 flow, photo flavor: local bubble immediately, multipart upload,
-    /// then history syncs pick up the proposal reply as a normal assistant
-    /// message. Independent of the chat turn pipeline — no SSE, no 429 rules.
-    func sendPhoto(_ jpeg: Data) {
+    /// §B8.7 flow, photo flavor: local thumbnail bubble immediately,
+    /// multipart upload (caption rides along), then attach to the ingestion
+    /// turn's live stream so the proposal renders like a chat reply.
+    /// Independent of the chat turn pipeline — no 429 rules.
+    func sendPhoto(_ jpeg: Data, caption: String = "") {
         let message = ChatMessage(
-            localID: UUID(), serverID: nil, role: "user", text: "[photo]",
+            localID: UUID(), serverID: nil, role: "user", text: caption,
             date: Date(), serverTS: nil, state: .sending, voiceOriginated: false,
-            failureReason: nil
+            failureReason: nil, photoFile: CacheFiles.savePhoto(jpeg)
         )
         pendingPhotos[message.localID] = jpeg
         messages.append(message)
@@ -110,29 +122,22 @@ final class ChatStore {
     }
 
     private func uploadPhoto(_ id: UUID) async {
-        guard let jpeg = pendingPhotos[id] else { return }
+        guard let jpeg = photoBytes(for: id) else { return }
+        let caption = messages.first(where: { $0.localID == id })?.text ?? ""
         let filename = "photo-\(Int(Date().timeIntervalSince1970)).jpg"
         do {
-            let response = try await settings.client().uploadPhoto(jpeg: jpeg, filename: filename)
+            let response = try await settings.client().uploadPhoto(
+                jpeg: jpeg, filename: filename, caption: caption
+            )
             guard let index = messages.firstIndex(where: { $0.localID == id }) else { return }
             messages[index].state = .sent
-            messages[index].text = "[photo: \(response.title)]"
             // Synthetic serverID: exempts the bubble from §B8.6 healing (the
             // server transcript has no matching user line) while keeping it
             // out of duplicate-append paths.
             messages[index].serverID = "doc-\(response.documentId)"
             pendingPhotos[id] = nil
             persist()
-            // The extraction turn takes model-inference time; the proposal
-            // arrives via ordinary history sync.
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(5))
-                await self?.syncHistory()
-            }
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(20))
-                await self?.syncHistory()
-            }
+            streamProposal(documentID: response.documentId)
         } catch {
             guard let index = messages.firstIndex(where: { $0.localID == id }) else { return }
             messages[index].state = .failed
@@ -144,6 +149,81 @@ final class ChatStore {
             }
             persist()
         }
+    }
+
+    /// Render the ingestion turn live (GET /documents/{id}/stream): typing
+    /// dots, streamed tokens, done — the same shape as a chat reply. A
+    /// dropped stream degrades to .incomplete and the ordinary history sync
+    /// heals it (ingestion replies ARE in the server transcript).
+    private func streamProposal(documentID: Int) {
+        let assistant = ChatMessage(
+            localID: UUID(), serverID: nil, role: "assistant", text: "",
+            date: Date(), serverTS: nil, state: .streaming, voiceOriginated: false
+        )
+        messages.append(assistant)
+        persist()
+        Task {
+            var receivedDone = false
+            do {
+                for try await event in settings.client().streamDocument(id: documentID) {
+                    guard let index = messages.firstIndex(where: { $0.localID == assistant.localID }) else { return }
+                    switch event {
+                    case .text(let chunk):
+                        messages[index].text += chunk
+                    case .done:
+                        receivedDone = true
+                        messages[index].state = .done
+                        NotificationCenter.default.post(name: .inklingDataShouldRefresh, object: nil)
+                    case .exit(let code):
+                        if code != 0 { messages[index].state = .errored }
+                    }
+                    persist()
+                }
+            } catch {
+                // fall through to the incomplete handling below
+            }
+            if !receivedDone,
+               let index = messages.firstIndex(where: { $0.localID == assistant.localID }),
+               messages[index].state == .streaming {
+                if messages[index].text.isEmpty {
+                    // Nothing arrived (connection died early): drop the dots;
+                    // the sync below appends the reply as a normal message.
+                    messages.remove(at: index)
+                } else {
+                    messages[index].state = .incomplete
+                }
+                scheduleIncompleteSync()
+            }
+            persist()
+        }
+    }
+
+    /// The staged/failed photo's bytes: in-memory first, then the thumbnail
+    /// file — so retry works even after a relaunch.
+    private func photoBytes(for id: UUID) -> Data? {
+        if let jpeg = pendingPhotos[id] { return jpeg }
+        guard let file = messages.first(where: { $0.localID == id })?.photoFile else { return nil }
+        return try? Data(contentsOf: CacheFiles.photoURL(file))
+    }
+
+    /// The bubble's image: local cache first, else refetch the original from
+    /// the server (photos survive cache clears server-side) and re-cache.
+    func photo(for message: ChatMessage) async -> UIImage? {
+        if let file = message.photoFile,
+           let image = UIImage(contentsOfFile: CacheFiles.photoURL(file).path) {
+            return image
+        }
+        guard let documentID = message.documentID,
+              let data = try? await settings.client().fetchDocumentOriginal(id: documentID),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        if let name = CacheFiles.savePhoto(data),
+           let index = messages.firstIndex(where: { $0.localID == message.localID }) {
+            messages[index].photoFile = name
+            persist()
+        }
+        return image
     }
 
     func syncHistory() async {
