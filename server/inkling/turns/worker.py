@@ -35,7 +35,7 @@ from inkling.turns.commands import (
 )
 from inkling.turns.commands import parse_commands
 from inkling.turns.commit import commit_turn
-from inkling.turns.context import assemble_context
+from inkling.turns.context import AssembledContext, assemble_context
 from inkling.turns.ingestion import assemble_ingestion_context, is_ingestion_trigger
 from inkling.turns.recall import make_recall_handler, recall_tool
 from inkling.turns.stream import StreamEvent
@@ -240,7 +240,8 @@ class Worker:
         seq = 0
         first_text_at: float | None = None
         try:
-            system, context = await self._assemble_context(trigger)
+            assembled = await self._assemble_context(trigger)
+            system, context = assembled.system, assembled.context
 
             async def on_text_delta(text: str) -> None:
                 nonlocal seq, first_text_at
@@ -270,6 +271,7 @@ class Worker:
                         ),
                     },
                     source=trigger["source"],
+                    images=list(assembled.images),
                 )
             )
             lease_waiter = asyncio.create_task(lease_lost.wait())
@@ -336,25 +338,23 @@ class Worker:
         finally:
             heart.cancel()
 
-    async def _assemble_context(self, trigger: dict[str, Any]) -> tuple[str, str]:
+    async def _assemble_context(self, trigger: dict[str, Any]) -> AssembledContext:
         """One snapshot transaction, closed before inference (§5.3).
 
         Consolidation triggers (§13.1) get their own prompt and day-scoped
         context; everything else gets the §8 assembly.
         """
         if is_consolidation_trigger(trigger):
-            assembled = await assemble_consolidation_context(
+            return await assemble_consolidation_context(
                 self.db, user_id=self.user_id, trigger=trigger
             )
-        elif is_ingestion_trigger(trigger):
-            assembled = await assemble_ingestion_context(
+        if is_ingestion_trigger(trigger):
+            return await assemble_ingestion_context(
                 self.db, user_id=self.user_id, trigger=trigger
             )
-        else:
-            assembled = await assemble_context(
-                self.db, user_id=self.user_id, trigger=trigger
-            )
-        return assembled.system, assembled.context
+        return await assemble_context(
+            self.db, user_id=self.user_id, trigger=trigger
+        )
 
     async def _heartbeat(self, turn_id: int, lease_lost: asyncio.Event) -> None:
         while True:

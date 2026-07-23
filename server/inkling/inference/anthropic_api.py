@@ -60,7 +60,10 @@ class AnthropicAPIGateway:
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler] | None = None,
         source: str = "chat",  # accepted for the protocol; no per-source tuning here
+        images: list[Any] | None = None,  # wishlist-frozen adapter: not rendered
     ) -> TurnResult:
+        if images:
+            log.warning("anthropic_api adapter ignoring %d image(s)", len(images))
         return await with_one_retry(
             lambda: self._run(
                 system=system,

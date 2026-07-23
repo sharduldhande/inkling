@@ -107,7 +107,10 @@ class CodexExecGateway:
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, Any] | None = None,
         source: str = "chat",  # accepted for the protocol; no per-source tuning here
+        images: list[Any] | None = None,  # wishlist-frozen adapter: not rendered
     ) -> TurnResult:
+        if images:
+            log.warning("codex_exec adapter ignoring %d image(s)", len(images))
         # A one-shot subprocess has no mid-turn tool channel: recall is
         # unavailable on this adapter, and §8's deterministic retrieval gate
         # is the floor it falls back to (documented degradation, not an error).

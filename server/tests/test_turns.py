@@ -453,7 +453,7 @@ async def test_a_broken_subscriber_does_not_fail_the_turn(db: Database):
 class ExplodingGateway:
     async def run_turn(
         self, *, user_id, system, context, tools, on_text_delta,
-        tool_handlers=None, source="chat",
+        tool_handlers=None, source="chat", images=None,
     ):
         raise RuntimeError("provider exploded")
 

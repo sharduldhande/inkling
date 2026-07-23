@@ -10,6 +10,7 @@ Auth is the routes_history shape: bearer token → roster → tenant.
 
 import logging
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -26,6 +27,10 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_UPLOAD_BYTES = extract.MAX_PDF_BYTES
+# Photos ride the same route but go to the model as real image blocks, so the
+# cap is the API's per-image limit, not the PDF text-extraction cap.
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+IMAGE_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -34,14 +39,21 @@ def _safe_name(name: str) -> str:
     return _UNSAFE.sub("_", Path(name).name).strip("._") or "document"
 
 
-def _store(uploads_dir: str, user_id: str, filename: str, data: bytes) -> str:
+def _store(
+    uploads_dir: str, user_id: str, filename: str, data: bytes, *,
+    required: bool = False,
+) -> str:
     """Keep the original under EXPORT_GIT_DIR/uploads/<user>/ (§14).
 
-    Unconfigured (dev, tests without the export dir) degrades to not storing;
-    the extracted text in the row is what the flow actually runs on.
+    Unconfigured (dev, tests without the export dir) degrades to not storing —
+    except when `required` (photos: the stored file IS what the ingestion turn
+    reads, there is no extracted text to fall back on), which falls back to
+    the system temp dir rather than silently producing a blind turn.
     """
     if not uploads_dir:
-        return "(not stored: EXPORT_GIT_DIR unset)"
+        if not required:
+            return "(not stored: EXPORT_GIT_DIR unset)"
+        uploads_dir = str(Path(tempfile.gettempdir()) / "inkling")
     directory = Path(uploads_dir) / "uploads" / user_id
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{int(time.time())}-{_safe_name(filename)}"
@@ -70,10 +82,26 @@ async def upload_document(
             data = await upload.read()
             if len(data) > MAX_UPLOAD_BYTES:
                 return JSONResponse({"error": "file too large"}, status_code=413)
-            title = _safe_name(upload.filename or "document.pdf")
-            text = extract.pdf_text(data)
-            kind = "pdf"
-            storage_path = _store(app.state.uploads_dir, user_id, title, data)
+            media_type = (upload.content_type or "").split(";")[0].strip().lower()
+            if media_type in IMAGE_MEDIA_TYPES:
+                if len(data) > MAX_IMAGE_BYTES:
+                    return JSONResponse(
+                        {"error": "photo too large (5MB limit)"}, status_code=413
+                    )
+                title = _safe_name(upload.filename or "photo.jpg")
+                kind = "photo"
+                # No server-side extraction: the ingestion turn gets the
+                # stored original as a real image block, so storage is the
+                # data path, not an archive nicety.
+                text = ""
+                storage_path = _store(
+                    app.state.uploads_dir, user_id, title, data, required=True
+                )
+            else:
+                title = _safe_name(upload.filename or "document.pdf")
+                text = extract.pdf_text(data)
+                kind = "pdf"
+                storage_path = _store(app.state.uploads_dir, user_id, title, data)
         elif content_type.startswith("application/json"):
             body = await request.json()
             url = body.get("url") if isinstance(body, dict) else None
@@ -94,12 +122,15 @@ async def upload_document(
         return JSONResponse({"error": str(exc)}, status_code=422)
 
     async with app.state.db.with_tenant(user_id) as conn:
+        extracted: dict = {"kind": kind, "text": text, "chars": len(text)}
+        if kind == "photo":
+            extracted["media_type"] = media_type
         row = await documents_q.insert(
             conn,
             user_id=user_id,
             title=title,
             storage_path=storage_path,
-            extracted={"kind": kind, "text": text, "chars": len(text)},
+            extracted=extracted,
         )
     document_id = int(row["id"])
 
@@ -110,7 +141,11 @@ async def upload_document(
         payload={
             "document_id": document_id,
             "title": title,
-            "text": f"New document uploaded: '{title}'. Extract and propose.",
+            "text": (
+                f"New photo taken: '{title}'. Look at it and propose."
+                if kind == "photo"
+                else f"New document uploaded: '{title}'. Extract and propose."
+            ),
         },
         source_ref=f"document:{document_id}",
         idempotency_key=f"ingestion:{document_id}",

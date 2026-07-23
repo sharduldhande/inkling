@@ -50,6 +50,17 @@ class ToolSchema(BaseModel):
     input_schema: dict[str, Any]
 
 
+class ImageAttachment(BaseModel):
+    """An image the turn's user message carries (photo ingestion, §14).
+
+    Base64 is the wire shape every consumer wants (Anthropic content blocks);
+    loading it here once keeps adapters free of filesystem access.
+    """
+
+    media_type: str  # image/jpeg, image/png, image/webp
+    data_base64: str
+
+
 def emit_commands_tool() -> ToolSchema:
     """The single tool every adapter exposes (§7, §9)."""
     return ToolSchema(
@@ -85,6 +96,10 @@ class InferenceGateway(Protocol):
         # change — chat has a human watching the stream, so adapters may trade
         # reasoning depth for time-to-first-token on it.
         source: str = "chat",
+        # Images attached to the turn's user message (photo ingestion). Only
+        # the maintained SDK adapter renders them; others must accept and
+        # ignore the argument rather than crash a turn over it.
+        images: list[ImageAttachment] | None = None,
     ) -> TurnResult: ...
 
 
@@ -152,6 +167,7 @@ class StubGateway:
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler] | None = None,
         source: str = "chat",
+        images: list[ImageAttachment] | None = None,
     ) -> TurnResult:
         recall_results = []
         handler = (tool_handlers or {}).get("recall")
@@ -166,6 +182,7 @@ class StubGateway:
                 "tools": tools,
                 "recall_results": recall_results,
                 "source": source,
+                "images": list(images or []),
             }
         )
         for i in range(0, len(self.reply), self.chunk_size):

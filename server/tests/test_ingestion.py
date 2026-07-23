@@ -201,6 +201,116 @@ async def test_unextractable_upload_is_422_and_writes_nothing(client, db: Databa
     assert await _rows(db, "SELECT 1 FROM triggers") == []
 
 
+# --- photos ------------------------------------------------------------------
+
+
+# A real 1x1 transparent PNG: small, valid, and enough for the route, which
+# never parses image bytes.
+_TINY_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xcf"
+    b"\xc0\xf0\x1f\x00\x05\x05\x02\x00\x0f\xf5<U\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+async def _seed_photo(db: Database, path: str) -> int:
+    async with db.with_tenant(USER_A) as conn:
+        cur = await conn.execute(
+            "INSERT INTO ingested_documents (user_id, title, storage_path, extracted) "
+            "VALUES (%s, 'photo.png', %s, %s) RETURNING id",
+            (USER_A, path,
+             '{"kind": "photo", "text": "", "media_type": "image/png"}'),
+        )
+        return int((await cur.fetchone())["id"])
+
+
+async def test_photo_upload_creates_photo_row_and_trigger(client, db: Database):
+    r = await client.post(
+        "/documents",
+        files={"file": ("IMG 0042.png", _TINY_PNG, "image/png")},
+        headers=auth(),
+    )
+    assert r.status_code == 202
+
+    [doc] = await _rows(db, "SELECT * FROM ingested_documents")
+    assert doc["extracted"]["kind"] == "photo"
+    assert doc["extracted"]["media_type"] == "image/png"
+    assert doc["extracted"]["text"] == ""
+    # Photos MUST be stored — the turn reads these bytes back.
+    from pathlib import Path
+    assert Path(doc["storage_path"]).read_bytes() == _TINY_PNG
+
+    [trig] = await _rows(db, "SELECT * FROM triggers")
+    assert trig["source"] == "ingestion"
+    assert "photo" in trig["payload"]["text"]
+
+
+async def test_oversized_photo_is_413(client, db: Database):
+    from inkling.api.routes_documents import MAX_IMAGE_BYTES
+
+    r = await client.post(
+        "/documents",
+        files={"file": ("big.jpg", b"x" * (MAX_IMAGE_BYTES + 1), "image/jpeg")},
+        headers=auth(),
+    )
+    assert r.status_code == 413
+    assert await _rows(db, "SELECT 1 FROM ingested_documents") == []
+
+
+async def test_photo_ingestion_context_attaches_the_image(db: Database, tmp_path):
+    import base64
+
+    path = tmp_path / "photo.png"
+    path.write_bytes(_TINY_PNG)
+    doc_id = await _seed_photo(db, str(path))
+
+    got = await assemble_ingestion_context(
+        db, user_id=USER_A,
+        trigger={"id": 1, "source": "ingestion",
+                 "source_ref": f"document:{doc_id}",
+                 "payload": {"document_id": doc_id, "title": "photo.png",
+                             "text": "New photo taken."}},
+    )
+
+    assert "photo the user just took" in got.system
+    assert "PROPOSAL only" in got.system
+    [image] = got.images
+    assert image.media_type == "image/png"
+    assert base64.b64decode(image.data_base64) == _TINY_PNG
+
+
+async def test_photo_ingestion_degrades_when_original_is_gone(db: Database):
+    doc_id = await _seed_photo(db, "/nonexistent/gone.png")
+    got = await assemble_ingestion_context(
+        db, user_id=USER_A,
+        trigger={"id": 1, "source": "ingestion",
+                 "source_ref": f"document:{doc_id}",
+                 "payload": {"document_id": doc_id, "title": "photo.png",
+                             "text": "New photo taken."}},
+    )
+    assert got.images == ()
+    assert "retake" in got.context
+
+
+async def test_photo_turn_passes_images_to_the_gateway(db: Database, tmp_path):
+    path = tmp_path / "photo.png"
+    path.write_bytes(_TINY_PNG)
+    doc_id = await _seed_photo(db, str(path))
+    await ingress.submit(
+        db, user_id=USER_A, source="ingestion",
+        payload={"document_id": doc_id, "title": "photo.png",
+                 "text": "New photo taken."},
+        source_ref=f"document:{doc_id}",
+    )
+    gateway = StubGateway(reply="A poster for a concert on 2026-08-01. Confirm?")
+    worker = Worker(db, USER_A, gateway)
+    assert await worker.tick() is True
+
+    [call] = gateway.calls
+    assert len(call["images"]) == 1
+    assert call["images"][0].media_type == "image/png"
+
+
 # --- the ingestion turn ------------------------------------------------------
 
 

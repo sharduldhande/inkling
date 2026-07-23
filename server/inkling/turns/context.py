@@ -96,6 +96,10 @@ class AssembledContext:
     system: str
     context: str
     sizes: dict[str, int]  # estimated tokens per included section
+    # Images for the turn's user message (photo ingestion, §14); empty
+    # everywhere else. gateway.ImageAttachment values — typed loosely here to
+    # keep context assembly import-independent of the inference package.
+    images: tuple[Any, ...] = ()
 
 
 def references_past(text: str) -> bool:

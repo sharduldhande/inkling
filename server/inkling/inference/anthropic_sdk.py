@@ -35,6 +35,7 @@ from typing import Any
 
 from inkling.inference.gateway import (
     EMIT_COMMANDS_INSTRUCTION,
+    ImageAttachment,
     InferenceError,
     OnTextDelta,
     ToolHandler,
@@ -70,6 +71,7 @@ class AnthropicSDKGateway:
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler] | None = None,
         source: str = "chat",
+        images: list[ImageAttachment] | None = None,
     ) -> TurnResult:
         return await with_one_retry(
             lambda: self._run(
@@ -78,6 +80,7 @@ class AnthropicSDKGateway:
                 on_text_delta=on_text_delta,
                 tool_handlers=tool_handlers or {},
                 source=source,
+                images=images or [],
             )
         )
 
@@ -89,6 +92,7 @@ class AnthropicSDKGateway:
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler],
         source: str,
+        images: list[ImageAttachment],
     ) -> TurnResult:
         # Imported here so the api_key/stub paths never require the package.
         from claude_agent_sdk import (
@@ -216,11 +220,44 @@ class AnthropicSDKGateway:
                 await on_text_delta(chunk)
             last_flush = loop.time()
 
+        # A plain string prompt has nowhere to carry image content blocks, so
+        # photo turns switch to the SDK's streaming input mode: one user
+        # message whose content is the images followed by the assembled
+        # context. Text-only turns keep the string path untouched.
+        if images:
+            async def _prompt_messages():
+                yield {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            *[
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": image.media_type,
+                                        "data": image.data_base64,
+                                    },
+                                }
+                                for image in images
+                            ],
+                            {"type": "text", "text": context},
+                        ],
+                    },
+                    "parent_tool_use_id": None,
+                    "session_id": "default",
+                }
+
+            prompt: Any = _prompt_messages()
+        else:
+            prompt = context
+
         # Break-out needs an explicit aclose(): abandoning an async generator
         # only schedules cleanup at GC time, which would leave the CLI
         # subprocess running (and generating the restatement we broke out to
         # avoid) for an unbounded while.
-        stream = query(prompt=context, options=options)
+        stream = query(prompt=prompt, options=options)
         try:
             async for message in stream:
                 # Early exit: the reply exists and emit_commands has run CLEAN,
