@@ -11,6 +11,7 @@ import logging
 
 from inkling.db.client import Database
 from inkling.inference.gateway import (
+    ImageAttachment,
     InferenceError,
     OnTextDelta,
     ToolHandler,
@@ -35,6 +36,7 @@ class ProfileRoutingGateway:
         on_text_delta: OnTextDelta,
         tool_handlers: dict[str, ToolHandler] | None = None,
         source: str = "chat",
+        images: list[ImageAttachment] | None = None,
     ) -> TurnResult:
         async with self.db.with_tenant(user_id) as conn:
             cur = await conn.execute(
@@ -77,4 +79,5 @@ class ProfileRoutingGateway:
             on_text_delta=on_text_delta,
             tool_handlers=tool_handlers,
             source=source,
+            images=images,
         )

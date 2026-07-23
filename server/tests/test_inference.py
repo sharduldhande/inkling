@@ -294,3 +294,27 @@ async def test_stub_gateway_matches_the_protocol():
     assert "".join(seen) == "hello"
     assert result.text == "hello"
     assert result.model == "stub"
+
+
+def test_every_gateway_accepts_the_full_protocol_signature():
+    """Signature-drift guard: a kwarg added to the protocol must land on EVERY
+    implementation, wrappers included — ProfileRoutingGateway sits between the
+    worker and the adapters, and missing `images` there produced a live
+    TypeError in prod (2026-07-23)."""
+    import inspect
+
+    from inkling.inference.anthropic_api import AnthropicAPIGateway
+    from inkling.inference.anthropic_sdk import AnthropicSDKGateway
+    from inkling.inference.codex_exec import CodexExecGateway
+    from inkling.inference.gateway import InferenceGateway
+
+    protocol_params = set(
+        inspect.signature(InferenceGateway.run_turn).parameters
+    ) - {"self"}
+    for cls in (
+        AnthropicSDKGateway, AnthropicAPIGateway, CodexExecGateway,
+        ProfileRoutingGateway, StubGateway,
+    ):
+        params = set(inspect.signature(cls.run_turn).parameters) - {"self"}
+        missing = protocol_params - params
+        assert not missing, f"{cls.__name__}.run_turn missing {sorted(missing)}"
