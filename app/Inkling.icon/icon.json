@@ -19,6 +19,9 @@
     {
       "layers" : [
         {
+          "fill" : {
+            "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
+          },
           "image-name" : "ChatGPT_Image_Jul_18__2026__06_42_41_AM-removebg-preview.png",
           "name" : "ChatGPT_Image_Jul_18__2026__06_42_41_AM-removebg-preview",
           "position" : {

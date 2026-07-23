@@ -14,40 +14,50 @@ struct AgendaView: View {
     private var recurring: [AgendaItem] { store.items.filter { $0.kind == "recurring" } }
 
     var body: some View {
-        List {
-            if store.items.isEmpty {
-                emptyUpcoming
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-            } else {
-                if !overdue.isEmpty {
-                    Section("Overdue") {
-                        ForEach(overdue) { row(for: $0) }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                if store.items.isEmpty {
+                    emptyUpcoming
+                } else {
+                    if !overdue.isEmpty {
+                        section("Overdue", items: overdue)
                     }
-                }
-                Section("Next 48 hours") {
-                    if upcoming.isEmpty {
-                        emptyUpcoming
-                    } else {
-                        ForEach(upcoming) { row(for: $0) }
+                    section("Next 48 hours", items: upcoming)
+                    if !doneTasks.isEmpty {
+                        section("Done", items: doneTasks)
                     }
-                }
-                if !doneTasks.isEmpty {
-                    Section("Done") {
-                        ForEach(doneTasks) { row(for: $0) }
-                    }
-                }
-                if !recurring.isEmpty {
-                    Section("Recurring") {
-                        ForEach(recurring) { row(for: $0) }
+                    if !recurring.isEmpty {
+                        section("Recurring", items: recurring)
                     }
                 }
             }
+            .padding()
         }
-        .listStyle(.insetGrouped)
         .refreshable { await store.refresh() }
         .overlay(alignment: .top) {
             if store.showRefreshBanner { refreshBanner }
+        }
+    }
+
+    @ViewBuilder
+    private func section(_ title: String, items: [AgendaItem]) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 0) {
+                if items.isEmpty {
+                    emptyUpcoming
+                } else {
+                    ForEach(items) { item in
+                        row(for: item)
+                        if item.id != items.last?.id { Divider().padding(.leading, 24) }
+                    }
+                }
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
     }
 
@@ -78,6 +88,7 @@ struct AgendaView: View {
                     .lineLimit(1)
                     .foregroundStyle(item.isOverdue ? Color.red : Color.secondary)
             }
+            .padding(.vertical, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

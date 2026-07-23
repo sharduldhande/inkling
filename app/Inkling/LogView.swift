@@ -61,7 +61,7 @@ struct LogView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(12)
-                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
         }
     }
@@ -174,7 +174,7 @@ private struct QuotaTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(13)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -189,7 +189,7 @@ private struct HeatmapsView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(13)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private func heatmap(title: String, mode: HeatmapMode) -> some View {
