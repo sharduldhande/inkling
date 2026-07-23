@@ -81,8 +81,15 @@ struct ChatView: View {
                             showNewPill = false
                         }
                     }
-                    .onChange(of: store.messages) { _, _ in
-                        if nearBottom {
+                    .onChange(of: store.messages) { old, new in
+                        // The user's own send ALWAYS follows to the bottom:
+                        // nearBottom goes stale during keyboard transitions
+                        // (viewport and bottom-marker update out of sync),
+                        // and a sent bubble landing behind the keyboard
+                        // reads as a lost message.
+                        let sentByUser = new.count > old.count && new.last?.isUser == true
+                        if nearBottom || sentByUser {
+                            showNewPill = false
                             withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) }
                         } else {
                             showNewPill = true
