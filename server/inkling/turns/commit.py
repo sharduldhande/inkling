@@ -24,6 +24,7 @@ from inkling.inference.gateway import TurnResult
 from inkling.jobs.consolidate import is_consolidation_trigger
 from inkling.turns.ingestion import is_ingestion_trigger
 from inkling.turns.apply import apply_command
+from inkling.turns.commands import Notify
 from inkling.turns.stream import StreamEvent
 from inkling.turns.validate import validate_commands
 
@@ -168,15 +169,29 @@ async def commit_turn(
                 role="user",
                 text=payload["text"],
             )
-        if text:
-            # The transcript stores the text *with* the rejection notes: it is
-            # what the user saw, and it's what the next turn's context replays.
+        # The transcript records what the user SAW — it is both the chat
+        # history the app renders (/history) and the dialogue the next turn's
+        # context replays. A chat reply was seen in full (with rejection
+        # notes). A non-chat turn was seen only as its Notify push; a silent
+        # one wasn't seen at all, and recording its deliberation would leak it
+        # into chat AND make the model believe it said things the user never
+        # received. Full text stays recoverable in turn_events; anything a
+        # future turn needs belongs in working_state. Ingestion turns count as
+        # conversation: their reply IS the §14 proposal the user reads in chat
+        # (and the confirm turn re-reads via the tail).
+        if trigger["source"] == "chat" or is_ingestion_trigger(trigger):
+            visible = text
+        else:
+            visible = "\n\n".join(
+                c.body for c in verdict.accepted if isinstance(c, Notify)
+            )
+        if visible:
             await _transcript(
                 conn,
                 user_id=user_id,
                 turn_id=turn_id,
                 role="assistant",
-                text=text,
+                text=visible,
             )
 
         # v1 stream shapes, byte-compatible: text deltas, then done, then exit.

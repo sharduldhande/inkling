@@ -335,13 +335,35 @@ async def test_commit_writes_user_and_assistant_transcript(db: Database):
     ]
 
 
-async def test_non_chat_turn_records_no_user_transcript(db: Database):
+async def test_silent_non_chat_turn_records_no_transcript(db: Database):
+    """A non-chat turn with no Notify was never seen by the user, so nothing
+    of it belongs in the conversation record — not even its reply text
+    (seen live: presence-turn deliberation rendered in the app's chat)."""
     await ingress.submit(db, user_id=USER_A, source="wakeup", payload={"note": "2pm"})
-    await Worker(db, USER_A, StubGateway("reminder")).tick()
+    await Worker(db, USER_A, StubGateway("staying silent this turn")).tick()
 
     rows = await _rows(db, USER_A, "SELECT role FROM transcript")
 
-    assert [r["role"] for r in rows] == ["assistant"]
+    assert rows == []
+
+
+async def test_notifying_non_chat_turn_records_the_push_body(db: Database):
+    """What the user saw of a wakeup turn is the push, so that is what the
+    transcript (chat history + next turn's tail) records — not the reply."""
+    from inkling.turns.commands import Notify
+
+    await ingress.submit(db, user_id=USER_A, source="wakeup", payload={"note": "gym"})
+    gateway = StubGateway(
+        "internal musing about whether to ping",
+        commands=[Notify(type="Notify", body="Gym in 25 min — get changed.")],
+    )
+    await Worker(db, USER_A, gateway).tick()
+
+    rows = await _rows(db, USER_A, "SELECT role, text FROM transcript")
+
+    assert [(r["role"], r["text"]) for r in rows] == [
+        ("assistant", "Gym in 25 min — get changed.")
+    ]
 
 
 async def test_commands_are_applied_and_audited_through_the_worker(db: Database):
