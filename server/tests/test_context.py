@@ -3,7 +3,9 @@
 Runs as runtime_role against the Neon test branch, the shape production uses.
 """
 
+import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest_asyncio
@@ -11,7 +13,12 @@ import pytest_asyncio
 from inkling.db.client import Database
 from inkling.inference.gateway import StubGateway
 from inkling.turns import ingress
-from inkling.turns.context import BUDGETS, assemble_context, references_past
+from inkling.turns.context import (
+    BUDGETS,
+    _render_tail,
+    assemble_context,
+    references_past,
+)
 from inkling.turns.validate import estimate_tokens
 from inkling.turns.worker import Worker
 
@@ -174,17 +181,36 @@ async def test_oversized_goals_doc_is_truncated_with_marker(db: Database):
     assert got.sizes["goals"] <= BUDGETS["goals"] + 40  # marker overhead only
 
 
-async def test_transcript_tail_keeps_newest_and_marks_the_cut(db: Database):
-    for i in range(25):
+async def test_transcript_tail_keeps_newest_rows(db: Database):
+    for i in range(60):
         await _seed_transcript(
             db, USER_A, "user", f"message number {i}",
-            ts=NOW - timedelta(minutes=25 - i),
+            ts=NOW - timedelta(minutes=60 - i),
         )
 
     got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
 
-    assert "message number 24" in got.context
-    assert "message number 5" not in got.context  # beyond the 15-message tail
+    assert "message number 59" in got.context
+    assert "message number 19" not in got.context  # beyond the 40-message tail
+    assert got.sizes["transcript"] <= BUDGETS["transcript"] + 40
+
+
+async def test_over_budget_tail_drops_oldest_and_stays_time_anchored(db: Database):
+    for i in range(40):
+        await _seed_transcript(
+            db, USER_A, "user", f"long message {i} " + "filler " * 150,
+            ts=NOW - timedelta(minutes=40 - i),
+        )
+
+    got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
+
+    section = got.context.split("## Recent conversation", 1)[1]
+    lines = section.splitlines()
+    assert lines[1] == "[earlier messages omitted]"
+    # The surviving head re-grows its absolute-time anchor: either an opening
+    # (HH:MM) on the first message or a dated day marker above it.
+    assert re.match(r"(User \(\d\d:\d\d\): |— )", lines[2])
+    assert "long message 39" in section
     assert got.sizes["transcript"] <= BUDGETS["transcript"] + 40
 
 
@@ -214,6 +240,63 @@ async def test_within_cap_working_state_queues_nothing(db: Database):
 
     assert "consolidation" not in got.context
     assert await _rows(db, USER_A, "SELECT 1 FROM triggers WHERE source = 'job'") == []
+
+
+# --- tail dialogue rendering (unit, no DB) -----------------------------------
+
+_TAIL_TZ = ZoneInfo("America/New_York")
+_TAIL_NOW = datetime(2026, 7, 22, 12, 0, tzinfo=_TAIL_TZ)
+
+
+def _tail_row(ts: datetime, role: str, text: str) -> dict:
+    return {"ts": ts, "role": role, "text": text}
+
+
+def _at(day: int, hour: int, minute: int) -> datetime:
+    return datetime(2026, 7, day, hour, minute, tzinfo=_TAIL_TZ)
+
+
+def test_tail_same_day_burst_renders_as_anchored_dialogue():
+    rows = [
+        _tail_row(_at(22, 9, 14), "user", "how's my day looking"),
+        _tail_row(_at(22, 9, 14), "assistant", "Gym at 6, report due."),
+        _tail_row(_at(22, 9, 15), "user", "done with the report"),
+    ]
+    assert _render_tail(rows, _TAIL_TZ, _TAIL_NOW) == [
+        "User (09:14): how's my day looking",
+        "You: Gym at 6, report due.",
+        "User: done with the report",
+    ]
+
+
+def test_tail_marks_long_silences_with_elapsed_time():
+    rows = [
+        _tail_row(_at(22, 9, 0), "user", "morning"),
+        _tail_row(_at(22, 9, 45), "user", "back"),
+        _tail_row(_at(22, 11, 45), "assistant", "How did it go?"),
+    ]
+    assert _render_tail(rows, _TAIL_TZ, _TAIL_NOW) == [
+        "User (09:00): morning",
+        "— 45m pass, now 09:45 —",
+        "User: back",
+        "— 2h pass, now 11:45 —",
+        "You: How did it go?",
+    ]
+
+
+def test_tail_day_boundaries_get_dated_markers_not_anchors():
+    rows = [
+        _tail_row(_at(21, 22, 15), "user", "good night"),
+        _tail_row(_at(22, 8, 5), "user", "morning"),
+    ]
+    yesterday = _at(21, 22, 15).strftime("%A %Y-%m-%d, %H:%M")
+    today = _at(22, 8, 5).strftime("%A %Y-%m-%d, %H:%M")
+    assert _render_tail(rows, _TAIL_TZ, _TAIL_NOW) == [
+        f"— {yesterday} —",
+        "User: good night",
+        f"— {today} —",
+        "User: morning",
+    ]
 
 
 # --- memory facts and deterministic queries ---------------------------------

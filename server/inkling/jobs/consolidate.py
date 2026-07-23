@@ -68,9 +68,13 @@ max {DOC_TOKEN_CAPS['digest7']} tokens): what actually happened this week, \
 compressed.
 3. Maintain the patterns doc via UpdateDoc(kind: patterns, \
 max {DOC_TOKEN_CAPS['patterns']} tokens) when today's behavior confirms or \
-contradicts it.
+contradicts it. Patterns include the relationship, not just behavior: a \
+standing tone or register preference, a long-running joke or shorthand the \
+user keeps using. Same evidence bar as any pattern — it recurs across days \
+in the transcript, never inferred from one exchange.
 4. Extract durable facts as UpsertMemoryFact commands (subject, predicate, \
-value, optional condition, confidence 0-1). Reconcile against the known facts \
+value, optional condition, confidence 0-1) — relationship facts included \
+where they fit the shape (user / prefers / terse replies). Reconcile against the known facts \
 in context: confirm, correct, or add — never duplicate.
 5. If today's record contradicts itself or a doc in a way you cannot resolve, \
 schedule a morning-question wakeup (ScheduleWakeup, purpose stating the exact \

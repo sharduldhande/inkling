@@ -55,12 +55,18 @@ BUDGETS = {
     "wakeups": 250,
     "pending_ingestion": 300,
     "today": 300,
-    "transcript": 800,
+    "transcript": 3500,
     "episodes": 400,
     "trigger": 300,
 }
 
-TRANSCRIPT_TAIL = 15
+# The tail is deliberately deep (user decision 2026-07-22): it is the model's
+# conversational voice-continuity — its own recent phrasing, verbatim — and the
+# stable section ordering keeps the prompt-cache hit despite the size.
+TRANSCRIPT_TAIL = 40
+# Silences shorter than this read as one sitting; longer ones get an explicit
+# "time passed" marker so the model never has to subtract timestamps.
+TAIL_GAP_MARKER = timedelta(minutes=30)
 COMMITMENTS_LIMIT = 20
 COMMITMENTS_HORIZON = timedelta(hours=48)
 FACTS_LIMIT = 12
@@ -163,6 +169,52 @@ def _event_line(row: dict[str, Any], tz: ZoneInfo) -> str:
         bits.append(f"{row['value_num']}{' ' + row['unit'] if row['unit'] else ''}")
     line = f"- {row['occurred_at'].astimezone(tz).strftime('%H:%M')} {' '.join(bits)}"
     return f"{line}: {row['note']}" if row["note"] else line
+
+
+_TAIL_ROLES = {"user": "User", "assistant": "You"}
+
+
+def _tail_day_marker(ts: datetime) -> str:
+    return f"— {ts.strftime('%A %Y-%m-%d, %H:%M')} —"
+
+
+def _tail_gap_marker(gap: timedelta, ts: datetime) -> str:
+    minutes = round(gap.total_seconds() / 60)
+    dur = f"{minutes}m" if minutes < 120 else f"{round(minutes / 60)}h"
+    return f"— {dur} pass, now {ts.strftime('%H:%M')} —"
+
+
+def _render_tail(
+    rows: list[dict[str, Any]], tz: ZoneInfo, local_now: datetime
+) -> list[str]:
+    """The transcript tail as dialogue the model is mid-way through, not a log.
+
+    Prior assistant turns render as "You:" — the model inherits voice from
+    verbatim first-person history far more than from a timestamped record.
+    Time survives where it carries signal: an opening anchor, a marker per
+    ≥TAIL_GAP_MARKER silence, a dated marker per local-day boundary.
+    """
+    lines: list[str] = []
+    prev: datetime | None = None
+    for row in rows:
+        ts = row["ts"].astimezone(tz)
+        if prev is None:
+            if ts.date() != local_now.date():
+                lines.append(_tail_day_marker(ts))
+        elif ts.date() != prev.date():
+            lines.append(_tail_day_marker(ts))
+        elif ts - prev >= TAIL_GAP_MARKER:
+            lines.append(_tail_gap_marker(ts - prev, ts))
+        role = _TAIL_ROLES.get(row["role"], row["role"])
+        # Opening anchor — except when a day marker above already dated it.
+        anchor = (
+            f" ({ts.strftime('%H:%M')})"
+            if prev is None and ts.date() == local_now.date()
+            else ""
+        )
+        lines.append(f"{role}{anchor}: {row['text']}")
+        prev = ts
+    return lines
 
 
 def format_trigger(trigger: dict[str, Any]) -> str:
@@ -370,14 +422,25 @@ async def assemble_context(
         ))
 
     if tail:
-        lines = [
-            f"[{_local(r['ts'], tz)}] {r['role']}: {r['text']}" for r in tail
-        ]
-        sections.append((
-            "transcript", "## Recent conversation",
-            _clip_lines(lines, BUDGETS["transcript"],
-                        "[earlier messages omitted]", drop_head=True),
-        ))
+        # Clip by dropping whole ROWS (oldest first) and re-rendering, not by
+        # cutting rendered lines: the surviving head must re-grow its opening
+        # time anchor, and a marker must never outlive the message it dated.
+        rows = list(tail)
+        lines = _render_tail(rows, tz, local_now)
+        dropped = False
+        while len(rows) > 1 and estimate_tokens("\n".join(lines)) > BUDGETS["transcript"]:
+            rows.pop(0)
+            dropped = True
+            lines = _render_tail(rows, tz, local_now)
+        if dropped:
+            lines.insert(0, "[earlier messages omitted]")
+        newest = tail[-1]["ts"].astimezone(tz)
+        header = (
+            "## Recent conversation (today)"
+            if newest.date() == local_now.date()
+            else f"## Recent conversation (ending {newest.date().isoformat()})"
+        )
+        sections.append(("transcript", header, "\n".join(lines)))
 
     if episodes:
         lines = []
