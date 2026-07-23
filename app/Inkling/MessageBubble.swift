@@ -33,22 +33,34 @@ struct MessageBubble: View {
         .padding(.horizontal, 13)
         .padding(.vertical, 9)
         .foregroundStyle(message.isUser ? Color.white : Color.primary)
-        .background(message.isUser ? Color.accentColor : Color(uiColor: .secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .glassEffect(
+            message.isUser ? .regular.tint(.accentColor) : .regular,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
     }
 
     @ViewBuilder
     private var stateCaption: some View {
         switch message.state {
+        case .sending:
+            Text("Uploading…")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         case .queued:
             Text("Queued — Inkling is busy; it'll answer shortly.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         case .failed:
-            HStack(spacing: 6) {
-                Text("Not sent.")
-                    .foregroundStyle(.secondary)
-                Button("Retry", action: retry)
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("Not sent.")
+                        .foregroundStyle(.secondary)
+                    Button("Retry", action: retry)
+                }
+                if let reason = message.failureReason {
+                    Text(reason)
+                        .foregroundStyle(.red)
+                }
             }
             .font(.caption2)
         case .incomplete:

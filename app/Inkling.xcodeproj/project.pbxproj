@@ -20,6 +20,8 @@
 		A1000000000000000000000B /* LogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* LogView.swift */; };
 		A1000000000000000000000C /* SettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* SettingsSheet.swift */; };
 		A1000000000000000000000D /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* MessageBubble.swift */; };
+		A10000000000000000000012 /* DeepgramTranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* DeepgramTranscriptionService.swift */; };
+		A10000000000000000000013 /* CameraPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* CameraPicker.swift */; };
 		A1000000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* Assets.xcassets */; };
 		A1000000000000000000000F /* Inkling.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* Inkling.icon */; };
 /* End PBXBuildFile section */
@@ -38,6 +40,8 @@
 		A2000000000000000000000B /* LogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogView.swift; sourceTree = "<group>"; };
 		A2000000000000000000000C /* SettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSheet.swift; sourceTree = "<group>"; };
 		A2000000000000000000000D /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
+		A20000000000000000000012 /* DeepgramTranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepgramTranscriptionService.swift; sourceTree = "<group>"; };
+		A20000000000000000000013 /* CameraPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPicker.swift; sourceTree = "<group>"; };
 		A2000000000000000000000E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A2000000000000000000000F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A20000000000000000000010 /* Inkling.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Inkling.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -80,6 +84,8 @@
 				A2000000000000000000000B /* LogView.swift */,
 				A2000000000000000000000C /* SettingsSheet.swift */,
 				A2000000000000000000000D /* MessageBubble.swift */,
+				A20000000000000000000012 /* DeepgramTranscriptionService.swift */,
+				A20000000000000000000013 /* CameraPicker.swift */,
 				A2000000000000000000000F /* Info.plist */,
 				A2000000000000000000000E /* Assets.xcassets */,
 			);
@@ -177,6 +183,8 @@
 				A1000000000000000000000B /* LogView.swift in Sources */,
 				A1000000000000000000000C /* SettingsSheet.swift in Sources */,
 				A1000000000000000000000D /* MessageBubble.swift in Sources */,
+				A10000000000000000000012 /* DeepgramTranscriptionService.swift in Sources */,
+				A10000000000000000000013 /* CameraPicker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

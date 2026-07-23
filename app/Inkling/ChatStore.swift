@@ -12,6 +12,7 @@ final class ChatStore {
     var messages: [ChatMessage]
     var draft = ""
     var focusRequestID = UUID()
+    var scrollToBottomRequestID = UUID()
     var isTurnInFlight = false
     var healthCaption: HealthCaption?
 
@@ -23,6 +24,9 @@ final class ChatStore {
     @ObservationIgnored private var incompleteSyncTask: Task<Void, Never>?
     @ObservationIgnored private var healthCaptionTask: Task<Void, Never>?
     @ObservationIgnored private var streamTask: Task<Void, Never>?
+    /// Bytes for photos still uploading or failed-and-retryable. Deliberately
+    /// not persisted: a relaunch turns .sending into .failed (see init).
+    @ObservationIgnored private var pendingPhotos: [UUID: Data] = [:]
     @ObservationIgnored private var watchdogTask: Task<Void, Never>?
     @ObservationIgnored private var lastFrameAt = Date()
 
@@ -36,9 +40,11 @@ final class ChatStore {
         self.settings = settings
         var cached = Array((CacheFiles.load([ChatMessage].self, named: CacheFiles.chat) ?? []).suffix(200))
         // A cold launch has no task behind any in-flight state: a cached
-        // .streaming bubble would show typing dots forever.
-        for i in cached.indices where cached[i].state == .streaming {
-            cached[i].state = .incomplete
+        // .streaming bubble would show typing dots forever, and a cached
+        // .sending photo has no upload (or bytes) behind it anymore.
+        for i in cached.indices {
+            if cached[i].state == .streaming { cached[i].state = .incomplete }
+            if cached[i].state == .sending { cached[i].state = .failed }
         }
         messages = cached
     }
@@ -46,6 +52,10 @@ final class ChatStore {
     func setPrefill(_ text: String) {
         draft = text
         focusRequestID = UUID()
+    }
+
+    func requestScrollToBottom() {
+        scrollToBottomRequestID = UUID()
     }
 
     func send(voiceOriginated: Bool = false) {
@@ -63,11 +73,77 @@ final class ChatStore {
     func retry(_ message: ChatMessage) {
         guard message.state == .failed, !isTurnInFlight,
               let index = messages.firstIndex(where: { $0.localID == message.localID }) else { return }
+        if message.isPhoto {
+            guard pendingPhotos[message.localID] != nil else {
+                // Bytes are gone (app relaunched since the failure).
+                messages[index].failureReason = "Photo lost after relaunch — take it again."
+                persist()
+                return
+            }
+            messages[index].state = .sending
+            messages[index].failureReason = nil
+            messages[index].date = Date()
+            persist()
+            Task { await uploadPhoto(message.localID) }
+            return
+        }
         messages[index].state = .sent
         messages[index].date = Date()
         messages[index].serverID = nil
         messages[index].serverTS = nil
         beginPost(for: message.localID)
+    }
+
+    /// §B8.7 flow, photo flavor: local bubble immediately, multipart upload,
+    /// then history syncs pick up the proposal reply as a normal assistant
+    /// message. Independent of the chat turn pipeline — no SSE, no 429 rules.
+    func sendPhoto(_ jpeg: Data) {
+        let message = ChatMessage(
+            localID: UUID(), serverID: nil, role: "user", text: "[photo]",
+            date: Date(), serverTS: nil, state: .sending, voiceOriginated: false,
+            failureReason: nil
+        )
+        pendingPhotos[message.localID] = jpeg
+        messages.append(message)
+        persist()
+        Task { await uploadPhoto(message.localID) }
+    }
+
+    private func uploadPhoto(_ id: UUID) async {
+        guard let jpeg = pendingPhotos[id] else { return }
+        let filename = "photo-\(Int(Date().timeIntervalSince1970)).jpg"
+        do {
+            let response = try await settings.client().uploadPhoto(jpeg: jpeg, filename: filename)
+            guard let index = messages.firstIndex(where: { $0.localID == id }) else { return }
+            messages[index].state = .sent
+            messages[index].text = "[photo: \(response.title)]"
+            // Synthetic serverID: exempts the bubble from §B8.6 healing (the
+            // server transcript has no matching user line) while keeping it
+            // out of duplicate-append paths.
+            messages[index].serverID = "doc-\(response.documentId)"
+            pendingPhotos[id] = nil
+            persist()
+            // The extraction turn takes model-inference time; the proposal
+            // arrives via ordinary history sync.
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                await self?.syncHistory()
+            }
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(20))
+                await self?.syncHistory()
+            }
+        } catch {
+            guard let index = messages.firstIndex(where: { $0.localID == id }) else { return }
+            messages[index].state = .failed
+            if case InklingClientError.rejected(let reason) = error {
+                messages[index].failureReason = reason
+            }
+            if error as? InklingClientError == .unauthorized {
+                NotificationCenter.default.post(name: .inklingUnauthorized, object: nil)
+            }
+            persist()
+        }
     }
 
     func syncHistory() async {

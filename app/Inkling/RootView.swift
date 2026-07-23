@@ -18,8 +18,22 @@ struct RootView: View {
         _logStore = State(initialValue: LogStore(settings: settings))
     }
 
+    // Re-tapping the selected Chat tab triggers the system scroll-to-top;
+    // for a bottom-anchored chat the right target is the newest message,
+    // so intercept the re-selection and counter-scroll to the bottom.
+    private var tabSelection: Binding<Tab> {
+        Binding {
+            selectedTab
+        } set: { tab in
+            if tab == selectedTab, tab == .chat {
+                chatStore.requestScrollToBottom()
+            }
+            selectedTab = tab
+        }
+    }
+
     var body: some View {
-        TabView(selection: $selectedTab) {
+        TabView(selection: tabSelection) {
             NavigationStack {
                 AgendaView(store: agendaStore) { item in
                     chatStore.setPrefill(item.chatPrefill)
@@ -32,7 +46,7 @@ struct RootView: View {
             .tag(Tab.today)
 
             NavigationStack {
-                ChatView(store: chatStore)
+                ChatView(store: chatStore, settings: settings)
                     .navigationTitle("Inkling")
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {

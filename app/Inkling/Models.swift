@@ -7,6 +7,7 @@ enum Tab: Int, Hashable {
 }
 
 enum ChatMessageState: String, Codable {
+    case sending
     case sent
     case queued
     case failed
@@ -25,9 +26,14 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var serverTS: Int?
     var state: ChatMessageState
     var voiceOriginated: Bool
+    /// Server-provided rejection reason shown under a failed upload (§B8.7).
+    var failureReason: String? = nil
 
     var id: UUID { localID }
     var isUser: Bool { role == "user" }
+    /// Photo bubbles live outside history-sync healing: their synthetic
+    /// serverID ("doc-<id>") never matches a transcript row.
+    var isPhoto: Bool { text.hasPrefix("[photo") }
 }
 
 struct HistoryMessage: Decodable {

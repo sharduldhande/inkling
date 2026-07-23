@@ -9,13 +9,16 @@ final class AppSettings {
 
     var serverURLString: String
     @ObservationIgnored private var bearerToken: String?
+    private var deepgramKey: String?
 
     init() {
         serverURLString = UserDefaults.standard.string(forKey: Self.serverURLKey) ?? Self.defaultServerURL
         bearerToken = KeychainHelper.getToken()
+        deepgramKey = KeychainHelper.get(account: KeychainHelper.deepgramAccount)
     }
 
     var hasToken: Bool { !(bearerToken ?? "").isEmpty }
+    var hasDeepgramKey: Bool { !(deepgramKey ?? "").isEmpty }
 
     func client() -> InklingClient {
         InklingClient(baseURL: URL(string: serverURLString)!, token: bearerToken ?? "")
@@ -30,6 +33,13 @@ final class AppSettings {
     }
 
     func currentToken() -> String { bearerToken ?? "" }
+
+    func currentDeepgramKey() -> String { deepgramKey ?? "" }
+
+    func saveDeepgramKey(_ key: String) {
+        guard !key.isEmpty, KeychainHelper.set(key, account: KeychainHelper.deepgramAccount) else { return }
+        deepgramKey = key
+    }
 }
 
 enum ChatEvent: Equatable {
@@ -43,6 +53,18 @@ enum InklingClientError: Error, Equatable {
     case busy429
     case transport
     case status(Int)
+    /// 4xx/422 from /documents with a server-provided reason to show inline.
+    case rejected(String)
+}
+
+struct DocumentUploadResponse: Decodable {
+    let documentId: Int
+    let title: String
+
+    enum CodingKeys: String, CodingKey {
+        case documentId = "document_id"
+        case title
+    }
 }
 
 struct InklingClient: @unchecked Sendable {
@@ -133,6 +155,49 @@ struct InklingClient: @unchecked Sendable {
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// POST /documents with the photo as multipart/form-data (§B8.7 shape).
+    /// 202 → parsed body; 4xx with an `error` string → `.rejected(reason)`.
+    func uploadPhoto(jpeg: Data, filename: String) async throws -> DocumentUploadResponse {
+        var request = try request(path: "documents", authenticated: true)
+        request.httpMethod = "POST"
+        let boundary = "inkling-\(UUID().uuidString)"
+        request.setValue(
+            "multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type"
+        )
+        var body = Data()
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".utf8
+        ))
+        body.append(Data("Content-Type: image/jpeg\r\n\r\n".utf8))
+        body.append(jpeg)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        request.httpBody = body
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw InklingClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw InklingClientError.transport }
+        if http.statusCode == 401 { throw InklingClientError.unauthorized }
+        guard http.statusCode == 202 else {
+            if (400..<500).contains(http.statusCode),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let reason = object["error"] as? String {
+                throw InklingClientError.rejected(reason)
+            }
+            throw InklingClientError.status(http.statusCode)
+        }
+        do {
+            return try JSONDecoder().decode(DocumentUploadResponse.self, from: data)
+        } catch {
+            throw InklingClientError.transport
         }
     }
 

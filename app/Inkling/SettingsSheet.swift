@@ -6,9 +6,12 @@ struct SettingsSheet: View {
 
     @State private var serverURL: String
     @State private var token = ""
+    @State private var deepgramKey = ""
     @State private var validationError: String?
     @State private var testResult: ConnectionTestResult?
     @State private var testing = false
+    @State private var deepgramResult: Bool?
+    @State private var testingDeepgram = false
     @State private var confirmingClear = false
 
     init(settings: AppSettings) {
@@ -60,6 +63,35 @@ struct SettingsSheet: View {
                 }
 
                 Section {
+                    SecureField(
+                        settings.hasDeepgramKey ? "••••••• (saved)" : "Deepgram API key",
+                        text: $deepgramKey
+                    )
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                    Button {
+                        Task { await testDeepgram() }
+                    } label: {
+                        HStack {
+                            Text("Test Deepgram key")
+                            Spacer()
+                            if testingDeepgram { ProgressView() }
+                        }
+                    }
+                    .disabled(testingDeepgram || (deepgramKey.isEmpty && !settings.hasDeepgramKey))
+
+                    if let deepgramResult {
+                        Text(deepgramResult ? "OK" : "Key rejected")
+                            .foregroundStyle(deepgramResult ? Color.green : Color.red)
+                    }
+                } header: {
+                    Text("Voice (Deepgram)")
+                } footer: {
+                    Text("Enables the mic button in chat. The key stays in the Keychain on this device.")
+                }
+
+                Section {
                     Button("Clear local caches", role: .destructive) {
                         confirmingClear = true
                     }
@@ -95,8 +127,17 @@ struct SettingsSheet: View {
         }
         validationError = nil
         settings.save(serverURL: serverURL, newToken: token.isEmpty ? nil : token)
+        if !deepgramKey.isEmpty { settings.saveDeepgramKey(deepgramKey) }
         token = ""
+        deepgramKey = ""
         dismiss()
+    }
+
+    private func testDeepgram() async {
+        testingDeepgram = true
+        defer { testingDeepgram = false }
+        let key = deepgramKey.isEmpty ? settings.currentDeepgramKey() : deepgramKey
+        deepgramResult = await DeepgramTranscriptionService.validateKey(key)
     }
 
     private func testConnection() async {
