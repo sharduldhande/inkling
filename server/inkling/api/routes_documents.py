@@ -15,10 +15,12 @@ import time
 from pathlib import Path
 
 from fastapi import APIRouter, Header, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from inkling.api.v1_contract import UNAUTHORIZED_BODY
+from inkling.api.routes_chat import _stream
+from inkling.api.v1_contract import SSE_HEADERS, UNAUTHORIZED_BODY
 from inkling.db.queries import documents as documents_q
+from inkling.db.queries import triggers as triggers_q
 from inkling.lib import extract
 from inkling.turns import ingress
 
@@ -83,6 +85,8 @@ async def upload_document(
             if len(data) > MAX_UPLOAD_BYTES:
                 return JSONResponse({"error": "file too large"}, status_code=413)
             media_type = (upload.content_type or "").split(";")[0].strip().lower()
+            caption_field = form.get("caption")
+            caption = caption_field.strip() if isinstance(caption_field, str) else ""
             if media_type in IMAGE_MEDIA_TYPES:
                 if len(data) > MAX_IMAGE_BYTES:
                     return JSONResponse(
@@ -125,6 +129,8 @@ async def upload_document(
         extracted: dict = {"kind": kind, "text": text, "chars": len(text)}
         if kind == "photo":
             extracted["media_type"] = media_type
+            if caption:
+                extracted["caption"] = caption
         row = await documents_q.insert(
             conn,
             user_id=user_id,
@@ -142,7 +148,11 @@ async def upload_document(
             "document_id": document_id,
             "title": title,
             "text": (
-                f"New photo taken: '{title}'. Look at it and propose."
+                (
+                    f"New photo taken: '{title}'. "
+                    + (f"The user sent it with this note: \"{caption}\". " if caption else "")
+                    + "Look at it and propose."
+                )
                 if kind == "photo"
                 else f"New document uploaded: '{title}'. Extract and propose."
             ),
@@ -159,3 +169,68 @@ async def upload_document(
         {"document_id": document_id, "title": title, "status": "queued"},
         status_code=202,
     )
+
+
+@router.get("/documents/{document_id}/stream")
+async def document_stream(
+    document_id: int,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Attach to the ingestion turn's live stream (v1 /chat SSE shape).
+
+    The upload 202s before the turn runs; this is how the app renders the
+    proposal like any chat reply — typing dots, live tokens, done — instead
+    of waiting for a history sync. Same broker + turn_events machinery as
+    POST /chat: safe to drop and reconnect, replay comes from the DB.
+    """
+    app = request.app
+    user_id = app.state.roster.user_for_header(authorization)
+    if user_id is None:
+        return Response(content=UNAUTHORIZED_BODY, status_code=401)
+
+    # Subscribe before resolving the trigger so no event can slip between.
+    queue = app.state.broker.open(user_id)
+    try:
+        async with app.state.db.with_tenant(user_id) as conn:
+            trigger = await triggers_q.by_idempotency_key(
+                conn, user_id, f"ingestion:{document_id}"
+            )
+    except Exception:
+        app.state.broker.close(user_id, queue)
+        raise
+    if trigger is None:
+        app.state.broker.close(user_id, queue)
+        return JSONResponse({"error": "no such document"}, status_code=404)
+
+    return StreamingResponse(
+        _stream(app, user_id, int(trigger["id"]), queue),
+        headers=dict(SSE_HEADERS),
+    )
+
+
+@router.get("/documents/{document_id}/original")
+async def document_original(
+    document_id: int,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Serve the stored original (photos: the image itself).
+
+    The app caches photos locally but can refetch after a cache clear or
+    reinstall. RLS scopes the row lookup, so another user's id is a plain 404.
+    """
+    app = request.app
+    user_id = app.state.roster.user_for_header(authorization)
+    if user_id is None:
+        return Response(content=UNAUTHORIZED_BODY, status_code=401)
+
+    async with app.state.db.with_tenant(user_id) as conn:
+        doc = await documents_q.get(conn, document_id)
+    if doc is None:
+        return JSONResponse({"error": "no such document"}, status_code=404)
+    path = Path(doc["storage_path"])
+    if not path.is_file():
+        return JSONResponse({"error": "original not stored"}, status_code=404)
+    media_type = (doc["extracted"] or {}).get("media_type") or "application/octet-stream"
+    return FileResponse(path, media_type=media_type)

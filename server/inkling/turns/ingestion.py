@@ -91,8 +91,16 @@ that confirm turn). You MAY emit one Notify with a one-sentence push \
 telling the user the result is ready, since this turn runs after they left \
 the camera.
 
+The user may have sent a note with the photo (it appears in the Task \
+section) — treat it as their instruction for what they want done.
+
 Check the existing commitments in context: if some obligations are already \
 tracked, say so instead of proposing duplicates.
+
+Say ONLY what matters to the user. Never narrate checks that found nothing \
+("no obligations here", "nothing to add to your commitments", "no \
+duplicates found") — silence about a thing IS the report that it wasn't \
+relevant.
 
 Keep the reply compact and scannable, plain text — no markdown tables or \
 headers; simple dash lists only.

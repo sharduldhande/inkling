@@ -245,6 +245,66 @@ async def test_photo_upload_creates_photo_row_and_trigger(client, db: Database):
     assert "photo" in trig["payload"]["text"]
 
 
+async def test_photo_caption_reaches_row_and_trigger(client, db: Database):
+    r = await client.post(
+        "/documents",
+        files={"file": ("IMG.png", _TINY_PNG, "image/png")},
+        data={"caption": "log calories for this"},
+        headers=auth(),
+    )
+    assert r.status_code == 202
+
+    [doc] = await _rows(db, "SELECT * FROM ingested_documents")
+    assert doc["extracted"]["caption"] == "log calories for this"
+    [trig] = await _rows(db, "SELECT * FROM triggers")
+    assert 'this note: "log calories for this"' in trig["payload"]["text"]
+
+
+async def test_document_stream_replays_the_proposal(client, db: Database):
+    r = await client.post(
+        "/documents",
+        files={"file": ("IMG.png", _TINY_PNG, "image/png")},
+        headers=auth(),
+    )
+    document_id = r.json()["document_id"]
+
+    gateway = StubGateway(reply="A concert poster. Confirm?")
+    worker = Worker(db, USER_A, gateway)
+    assert await worker.tick() is True
+
+    s = await client.get(f"/documents/{document_id}/stream", headers=auth())
+    assert s.status_code == 200
+    import json as json_mod
+    frames = [
+        json_mod.loads(line[6:])
+        for line in s.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    reply = "".join(f.get("text", "") for f in frames)
+    assert "A concert poster." in reply
+    assert {"done": True} in frames
+
+    missing = await client.get("/documents/999999/stream", headers=auth())
+    assert missing.status_code == 404
+
+
+async def test_document_original_serves_the_photo_bytes(client, db: Database):
+    r = await client.post(
+        "/documents",
+        files={"file": ("IMG.png", _TINY_PNG, "image/png")},
+        headers=auth(),
+    )
+    document_id = r.json()["document_id"]
+
+    o = await client.get(f"/documents/{document_id}/original", headers=auth())
+    assert o.status_code == 200
+    assert o.headers["content-type"].startswith("image/png")
+    assert o.content == _TINY_PNG
+
+    assert (await client.get("/documents/999999/original", headers=auth())).status_code == 404
+    assert (await client.get(f"/documents/{document_id}/original")).status_code == 401
+
+
 async def test_oversized_photo_is_413(client, db: Database):
     from inkling.api.routes_documents import MAX_IMAGE_BYTES
 
