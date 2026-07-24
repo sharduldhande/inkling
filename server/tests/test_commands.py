@@ -681,6 +681,63 @@ async def test_working_state_versions_accumulate_rather_than_overwrite(db: Datab
     assert [r["version"] for r in rows] == [1, 2]
 
 
+async def test_working_state_push_claim_without_notify_is_rejected(db: Database):
+    """Turn 138 (live): recorded 'sent ONE plain push' with no Notify in the
+    batch — every later turn trusted the note and stayed silent overnight."""
+    verdict = await _validate(
+        db,
+        USER_A,
+        [
+            {
+                "type": "UpdateWorkingState",
+                "new_content": "Sent one consolidated push at 20:00; standing down.",
+                "reason": "record the evening ping",
+            }
+        ],
+    )
+    assert "no push exists" in verdict.rejected[0].reason
+
+    # Same note WITH the Notify in the batch is fine.
+    verdict = await _validate(
+        db,
+        USER_A,
+        [
+            {"type": "Notify", "body": "Quiet all evening — Module 2 status?"},
+            {
+                "type": "UpdateWorkingState",
+                "new_content": "Sent one consolidated push at 20:00; standing down.",
+                "reason": "record the evening ping",
+            },
+        ],
+    )
+    assert not verdict.rejected, verdict.rejected
+
+
+async def test_naive_datetimes_mean_the_users_wall_clock(db: Database):
+    """The model's context clock is user-local; a bare '20:00' is 8 PM in
+    their zone, not UTC. Read as UTC, the evening wakeup fired at 4 PM (live,
+    2026-07-23)."""
+    from datetime import datetime as dt, timezone as tz
+    from zoneinfo import ZoneInfo
+
+    verdict = await _validate(
+        db,
+        USER_A,
+        [
+            {
+                "type": "ScheduleWakeup",
+                "fire_at": "2099-07-23T20:00:00",
+                "purpose": "evening check",
+            }
+        ],
+    )
+    assert not verdict.rejected, verdict.rejected
+    fire_at = verdict.accepted[0].fire_at
+    assert fire_at.tzinfo is not None
+    # USER_A seeds with timezone America/New_York: 20:00 ET == 00:00 UTC.
+    assert fire_at.astimezone(tz.utc) == dt(2099, 7, 24, 0, 0, tzinfo=tz.utc)
+
+
 async def test_working_state_over_token_cap_is_rejected(db: Database):
     verdict = await _validate(
         db,

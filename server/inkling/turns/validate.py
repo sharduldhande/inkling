@@ -22,8 +22,10 @@ be worth nothing otherwise.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -139,8 +141,40 @@ def estimate_tokens(text: str) -> int:
 
 
 def _aware(value: datetime) -> datetime:
-    """Treat a naive datetime as UTC — models omit the offset constantly."""
+    """Treat a naive datetime as UTC — models omit the offset constantly.
+
+    Backstop only: validate_commands localizes naive datetimes to the user's
+    timezone up front, so by the time checks run, values should be aware.
+    """
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _localize_naive_datetimes(commands: list[Command], user: dict[str, Any]) -> None:
+    """Give every naive datetime field the user's timezone, in place.
+
+    The model's context clock is user-local, so its bare timestamps are
+    wall-clock times in that zone. One pass here means validators, apply,
+    and storage all see the intended instant.
+    """
+    try:
+        tz = ZoneInfo(user.get("timezone") or "UTC")
+    except Exception:
+        tz = timezone.utc
+    for cmd in commands:
+        for name in type(cmd).model_fields:
+            value = getattr(cmd, name, None)
+            if isinstance(value, datetime) and value.tzinfo is None:
+                setattr(cmd, name, value.replace(tzinfo=tz))
+
+
+# A proactive turn whose working_state RECORDS a push must actually carry
+# the Notify: turn 138 (live) wrote "sent ONE plain push" with no Notify in
+# the batch, and every later turn trusted the note and stayed silent.
+_PUSH_CLAIM = re.compile(
+    r"(sent|sending|delivered|pushed)\s+(?:[\w'-]+\s+){0,4}?"
+    r"(push|ping|nudge|notification)|pinged",
+    re.IGNORECASE,
+)
 
 
 def _indent(line: str) -> int:
@@ -501,6 +535,12 @@ async def validate_commands(
     commitment_count = 0
     event_count = 0
 
+    # Naive datetimes mean the USER's wall clock, not UTC: the model reads a
+    # user-local context clock, so "20:00" naive is 8 PM for them. Treating
+    # it as UTC fired an evening wakeup at 4 PM (live, 2026-07-23).
+    _localize_naive_datetimes(commands, user)
+    has_notify = any(isinstance(cmd, Notify) for cmd in commands)
+
     for cmd in commands:
         if ingestion and not isinstance(cmd, Notify):
             rejected.append(Rejection(
@@ -552,6 +592,22 @@ async def validate_commands(
             reason = await _validate_snooze(conn, cmd)
         elif isinstance(cmd, UpdateWorkingState):
             reason = await _validate_update_working_state(conn, cmd)
+            if reason is None and not has_notify and _PUSH_CLAIM.search(cmd.new_content):
+                # References to OLDER pushes are fine — those left delivery
+                # rows. Only a claim with no Notify in-batch AND no recent
+                # delivery is the poison case.
+                cur = await conn.execute(
+                    "SELECT 1 FROM deliveries WHERE channel = 'ntfy' "
+                    "AND created_at > now() - interval '20 minutes' LIMIT 1"
+                )
+                if await cur.fetchone() is None:
+                    reason = (
+                        "this working_state records a push being sent, but "
+                        "no push exists (none in this batch, none recent) — "
+                        "emit the Notify alongside it, or correct the note "
+                        "(a recorded-but-unsent push silences every later "
+                        "turn)"
+                    )
         elif isinstance(cmd, ScheduleWakeup):
             reason = await _validate_schedule_wakeup(conn, cmd)
         elif isinstance(cmd, CancelWakeup):
