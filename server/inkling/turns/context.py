@@ -47,6 +47,7 @@ log = logging.getLogger(__name__)
 # prompts/system.py); its estimated size rides the assembly log line below.
 BUDGETS = {
     "goals": 400,
+    "clock": 40,
     "patterns": 600,
     "digest7": 500,
     "working_state": WORKING_STATE_TOKEN_CAP,  # 1200 hard cap, marker on excess
@@ -286,6 +287,17 @@ async def assemble_context(
             body = _clip(row["content"].strip(), BUDGETS[name],
                          f"[{kind} truncated to its context budget]")
             sections.append((name, header, body))
+
+    # The model has no clock of its own: without this line it reconstructs
+    # "now" from transcript markers and its own working_state narrative,
+    # and on a silent day it free-runs — live it drifted a full day ahead,
+    # sent "Morning" pushes at 00:39, and ran a 16:00 wakeup believing it
+    # was 20:00. This line is the ONLY authoritative time source.
+    sections.append((
+        "clock", "## Now",
+        local_now.strftime("%A %Y-%m-%d, %H:%M")
+        + f" ({user['timezone']}). Trust this over any other time reference.",
+    ))
 
     doc_section("goals", "goals", "## Goals")
 

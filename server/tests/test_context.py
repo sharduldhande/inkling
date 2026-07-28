@@ -115,6 +115,19 @@ async def test_sections_appear_in_stable_to_volatile_order(db: Database):
     )
 
 
+async def test_context_carries_an_authoritative_clock(db: Database):
+    """The model has no clock: without this it reconstructs 'now' from
+    transcript markers and its own notes — live it drifted a full day ahead
+    and sent 'Morning' pushes at 00:39."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
+    local = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    assert "## Now\n" + local.strftime("%A %Y-%m-%d, %H:") in got.context
+    assert "Trust this over any other time reference" in got.context
+
+
 async def test_commitments_and_working_state_present_even_when_empty(db: Database):
     got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
 
