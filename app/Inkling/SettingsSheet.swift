@@ -92,6 +92,24 @@ struct SettingsSheet: View {
                 }
 
                 Section {
+                    HStack {
+                        Text("Status")
+                        Spacer()
+                        Text(PushRegistrar.shared.statusText)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    Button("Re-register") {
+                        Task { await PushRegistrar.shared.ensureRegistered(settings: settings) }
+                    }
+                    .disabled(!settings.hasToken)
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("Reminders arrive as native push notifications. Re-register if they stop arriving.")
+                }
+
+                Section {
                     Button("Clear local caches", role: .destructive) {
                         confirmingClear = true
                     }

@@ -316,6 +316,20 @@ extension Double {
     }
 }
 
+/// Body of `POST /devices` (§11): this install's APNs token and which host
+/// Apple expects it on.
+struct DeviceRegistration: Encodable {
+    let token: String
+    let environment: String
+    let platform = "ios"
+    let appVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case token, environment, platform
+        case appVersion = "app_version"
+    }
+}
+
 extension Notification.Name {
     static let inklingUnauthorized = Notification.Name("InklingUnauthorized")
     static let inklingDataShouldRefresh = Notification.Name("InklingDataShouldRefresh")

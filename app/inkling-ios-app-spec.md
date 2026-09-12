@@ -336,10 +336,13 @@ reference into the chat input so the user can say what they want done
   `.buttonStyle(.glass)`. Content surfaces (message bubbles, quota tiles,
   ledger rows, heatmaps) stay on standard backgrounds per the HIG — glass is
   the control layer, not the content layer.
-- Free personal-team signing must be sufficient. Therefore: NO push
-  notification entitlements, NO APNs registration, NO Sign in with Apple, NO
-  App Groups, NO iCloud, NO background modes, NO HealthKit. Notifications
-  reach the user through the separate ntfy app; this app handles none.
+- Paid-team signing (LJA3588388) since 2026-09-11: the ONE entitlement is
+  `aps-environment` (Inkling.entitlements) for native push. Still NO Sign in
+  with Apple, NO App Groups, NO iCloud, NO background modes, NO HealthKit.
+  Push is registration + tap only (PushRegistrar.swift): the app requests
+  permission, POSTs its APNs token to `/devices` on every launch with the
+  environment read from the embedded provisioning profile, and routes a tap
+  into the same `inklingOpenURL` path as the URL scheme. No action buttons.
 - No third-party dependencies. No SwiftPM packages, no CocoaPods. URLSession
   only for networking.
 - No HTML/markdown rendering. Message text is plain text (SwiftUI `Text`,
@@ -877,9 +880,9 @@ Register scheme `inkling` (URL Types → Schemes: `inkling`, identifier
 `com.sharduldhande.inkling.urlscheme`). Handle via `.onOpenURL`: for ANY
 incoming `inkling://` URL — including exactly `inkling://open` — switch to
 the Chat tab and trigger a history sync. Unknown hosts/paths: same behavior,
-never crash. (ntfy notification taps deep-link here; the notification body
-itself was already delivered by ntfy — there is nothing to fetch beyond the
-normal sync.)
+never crash. (A push notification tap posts the same `inklingOpenURL`
+notification from the UNUserNotificationCenter delegate; the body was already
+shown by the system — there is nothing to fetch beyond the normal sync.)
 
 ## B12. Project structure (create exactly these files)
 

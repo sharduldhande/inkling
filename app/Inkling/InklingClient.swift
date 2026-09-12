@@ -211,6 +211,34 @@ struct InklingClient: @unchecked Sendable {
         }
     }
 
+    /// POST /devices: register this install's APNs token (§11). 200 → done;
+    /// 409/422 carry an `error` string → `.rejected(reason)`.
+    func registerDevice(token: String, environment: String, appVersion: String) async throws {
+        var request = try request(path: "devices", authenticated: true)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            DeviceRegistration(token: token, environment: environment, appVersion: appVersion)
+        )
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw InklingClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw InklingClientError.transport }
+        if http.statusCode == 401 { throw InklingClientError.unauthorized }
+        guard http.statusCode == 200 else {
+            if (400..<500).contains(http.statusCode),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let reason = object["error"] as? String {
+                throw InklingClientError.rejected(reason)
+            }
+            throw InklingClientError.status(http.statusCode)
+        }
+    }
+
     /// POST /documents with the photo as multipart/form-data (§B8.7 shape).
     /// 202 → parsed body; 4xx with an `error` string → `.rejected(reason)`.
     func uploadPhoto(

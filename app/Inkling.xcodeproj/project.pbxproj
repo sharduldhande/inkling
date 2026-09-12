@@ -22,6 +22,7 @@
 		A1000000000000000000000D /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* MessageBubble.swift */; };
 		A10000000000000000000012 /* DeepgramTranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* DeepgramTranscriptionService.swift */; };
 		A10000000000000000000013 /* CameraPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* CameraPicker.swift */; };
+		A10000000000000000000014 /* PushRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* PushRegistrar.swift */; };
 		A1000000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* Assets.xcassets */; };
 		A1000000000000000000000F /* Inkling.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* Inkling.icon */; };
 /* End PBXBuildFile section */
@@ -42,6 +43,8 @@
 		A2000000000000000000000D /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
 		A20000000000000000000012 /* DeepgramTranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepgramTranscriptionService.swift; sourceTree = "<group>"; };
 		A20000000000000000000013 /* CameraPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPicker.swift; sourceTree = "<group>"; };
+		A20000000000000000000014 /* PushRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistrar.swift; sourceTree = "<group>"; };
+		A20000000000000000000015 /* Inkling.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Inkling.entitlements; sourceTree = "<group>"; };
 		A2000000000000000000000E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A2000000000000000000000F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A20000000000000000000010 /* Inkling.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Inkling.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -86,7 +89,9 @@
 				A2000000000000000000000D /* MessageBubble.swift */,
 				A20000000000000000000012 /* DeepgramTranscriptionService.swift */,
 				A20000000000000000000013 /* CameraPicker.swift */,
+				A20000000000000000000014 /* PushRegistrar.swift */,
 				A2000000000000000000000F /* Info.plist */,
+				A20000000000000000000015 /* Inkling.entitlements */,
 				A2000000000000000000000E /* Assets.xcassets */,
 			);
 			path = Inkling;
@@ -185,6 +190,7 @@
 				A1000000000000000000000D /* MessageBubble.swift in Sources */,
 				A10000000000000000000012 /* DeepgramTranscriptionService.swift in Sources */,
 				A10000000000000000000013 /* CameraPicker.swift in Sources */,
+				A10000000000000000000014 /* PushRegistrar.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -243,6 +249,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = Inkling;
+				CODE_SIGN_ENTITLEMENTS = Inkling/Inkling.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -263,6 +270,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = Inkling;
+				CODE_SIGN_ENTITLEMENTS = Inkling/Inkling.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = NO;

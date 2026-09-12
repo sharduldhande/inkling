@@ -83,14 +83,20 @@ struct RootView: View {
         .onAppear {
             if !settings.hasToken { showingSettings = true }
         }
-        .task { await refreshAll() }
+        .task {
+            await refreshAll()
+            await PushRegistrar.shared.ensureRegistered(settings: settings)
+        }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task { await refreshAll() }
         }
         .onChange(of: showingSettings) { wasShowing, isShowing in
             guard wasShowing, !isShowing, settings.hasToken else { return }
-            Task { await refreshAll() }
+            Task {
+                await refreshAll()
+                await PushRegistrar.shared.ensureRegistered(settings: settings)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .inklingUnauthorized)) { _ in
             unauthorizedAlert = true

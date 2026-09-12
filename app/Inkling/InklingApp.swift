@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct InklingApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup {
             RootView()
