@@ -13,6 +13,8 @@ import sys
 
 from inkling.config import Config
 
+log = logging.getLogger(__name__)
+
 SERVICE_ROLES = ["all", "api", "worker", "scheduler", "delivery", "calendar", "jobs"]
 
 
@@ -29,7 +31,7 @@ def main() -> int:
     seed.add_argument("--user", required=True)
     seed.add_argument("--name", required=True)
     seed.add_argument("--tz", required=True, help="IANA timezone, e.g. America/New_York")
-    seed.add_argument("--ntfy-topic", required=True)
+    seed.add_argument("--ntfy-topic", help="legacy; user pushes go via APNs now")
     seed.add_argument(
         "--inference-profile",
         required=True,
@@ -112,6 +114,7 @@ async def _serve(config: Config, role: str) -> int:
     drainer_task = None
     drainer = None
     ntfy = None
+    apns = None
     calendar_sync = None
     calendar_task = None
     google = None
@@ -176,6 +179,21 @@ async def _serve(config: Config, role: str) -> int:
         if role in ("delivery", "all"):
             ntfy = NtfyClient(config.ntfy_base)
             extra = {}
+            if config.apns_key_file:
+                from inkling.delivery.apns import ApnsClient
+
+                apns = ApnsClient(
+                    db,
+                    key_file=config.apns_key_file,
+                    key_id=config.apns_key_id,
+                    team_id=config.apns_team_id,
+                    topic=config.apns_topic,
+                )
+                extra["apns"] = apns
+            else:
+                log.warning(
+                    "APNS_KEY_FILE unset: user pushes will dead-letter"
+                )
             if google is not None:
                 from inkling.calendar_.channel import CalendarChannel
 
@@ -312,6 +330,8 @@ async def _serve(config: Config, role: str) -> int:
                 await asyncio.gather(task, return_exceptions=True)
         if ntfy is not None:
             await ntfy.close()
+        if apns is not None:
+            await apns.close()
         if google is not None:
             await google.close()
         await db.close()

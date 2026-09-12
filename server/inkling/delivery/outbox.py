@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 from inkling.db.client import Database
 from inkling.db.queries import deliveries as deliveries_q
-from inkling.delivery.ntfy import Channel, DeliveryError
+from inkling.delivery.ntfy import Channel, DeliveryError, PermanentDeliveryError
 
 log = logging.getLogger(__name__)
 
@@ -55,10 +55,11 @@ class Drainer:
     ):
         self.db = db
         self.user_ids = user_ids
-        # Rows route by their channel column; ntfy is the default and always
-        # present. A row for an unconfigured channel (calendar off) fails its
-        # attempts into dead_letter + operator alert — honest degradation,
-        # same as any other undeliverable row.
+        # Rows route by their channel column. ntfy is always present and now
+        # carries operator alerts; user pushes are 'apns' (extra_channels),
+        # calendar writes 'calendar'. A row for an unconfigured channel (APNs
+        # key unset, calendar off) fails its attempts into dead_letter +
+        # operator alert — honest degradation, same as any undeliverable row.
         self.channels: dict[str, Channel] = {"ntfy": channel}
         self.channels.update(extra_channels or {})
         self.operator_topic = operator_topic
@@ -182,8 +183,12 @@ class Drainer:
         attempts = int(row["attempt_count"]) + 1
         error = f"{type(exc).__name__}: {exc}"[:500]
 
+        # A PermanentDeliveryError (every device token gone) skips the ladder:
+        # four more attempts over 80 minutes would fail identically, and the
+        # operator alert is what gets the phone re-registered.
+        permanent = isinstance(exc, PermanentDeliveryError)
         async with self.db.with_tenant(user_id) as conn:
-            if attempts <= len(BACKOFF):
+            if attempts <= len(BACKOFF) and not permanent:
                 await deliveries_q.mark_retry(
                     conn,
                     delivery_id,
@@ -204,6 +209,7 @@ class Drainer:
                 await deliveries_q.enqueue(
                     conn,
                     user_id=user_id,
+                    channel="ntfy",  # operator alerts stay on ntfy (§11)
                     destination=self.operator_topic,
                     body=(
                         f"delivery {delivery_id} to '{row['destination']}' "

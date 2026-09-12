@@ -35,7 +35,7 @@ unchecked boxes need the operator (hardware, credentials, or judgment).
 - [ ] Archive the rest of log.md in the repo (import more later if wanted).
 
 ## 4. Parallel run ≥ 1 week
-- [ ] v2 notifications on a SECOND ntfy topic (users.ntfy_topic in v2 ≠ v1's).
+- [ ] ~~v2 notifications on a SECOND ntfy topic~~ (superseded: v2 pushes via APNs to the app; v1 keeps ntfy).
 - [ ] Daily compare: did v2 surface everything v1 knew? Is consolidation
       output sane? (Nightly export diffs in inkling-data make this a
       `git log -p` read.)
@@ -44,7 +44,7 @@ unchecked boxes need the operator (hardware, credentials, or judgment).
 - [ ] `crontab -l > crontab-backup.txt` (capture BEFORE editing).
 - [ ] Remove ONLY legacy Inkling entries from crontab (v2 has none — §15).
 - [ ] Switch the Caddy vhost to v2 (deploy/Caddyfile.snippet), reload.
-- [ ] Point users.ntfy_topic at the real topics.
+- [ ] ~~Point users.ntfy_topic at the real topics.~~ (superseded by APNs; column is legacy)
 - [ ] Stop v1 server.js; archive its session dir.
 
 ## 6. Prove expendability

@@ -15,7 +15,7 @@ def seed_user(
     user_id: str,
     display_name: str,
     timezone: str,
-    ntfy_topic: str,
+    ntfy_topic: str | None = None,
     inference_profile: dict,
 ) -> None:
     with psycopg.connect(dsn) as conn:

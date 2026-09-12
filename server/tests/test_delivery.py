@@ -12,7 +12,7 @@ import pytest_asyncio
 from inkling.db.client import Database
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import deliveries as deliveries_q
-from inkling.delivery.ntfy import StubChannel
+from inkling.delivery.ntfy import PermanentDeliveryError, StubChannel
 from inkling.delivery.outbox import BACKOFF, Drainer
 from inkling.inference.gateway import StubGateway
 from inkling.turns import ingress
@@ -262,8 +262,8 @@ async def test_non_chat_turn_does_not_acknowledge(db: Database):
 
 
 async def test_notify_command_flows_from_turn_to_push(db: Database):
-    channel = StubChannel()
-    drainer = _drainer(db, channel)
+    channel = StubChannel()  # the apns channel; ntfy is operator-only now
+    drainer = _drainer(db, StubChannel(), extra_channels={"apns": channel})
     woken = []
     gateway = StubGateway(
         reply="I'll ping you",
@@ -277,4 +277,53 @@ async def test_notify_command_flows_from_turn_to_push(db: Database):
 
     assert await drainer.drain() == 1
     assert channel.sent[0]["body"] == "drink water"
-    assert channel.sent[0]["topic"] == f"inkling-{USER_A}-test"
+    assert channel.sent[0]["topic"] == USER_A, "addressed to the user, fanned out per device"
+
+
+# --- APNs cutover -------------------------------------------------------------
+
+
+class _PermanentStub(StubChannel):
+    async def send(self, **kwargs):
+        raise PermanentDeliveryError("stub: every device unregistered")
+
+
+async def test_permanent_error_dead_letters_on_first_attempt(db: Database):
+    """No backoff ladder when no retry can help; the operator is still told."""
+    delivery_id = await _enqueue(db, channel="apns", destination=USER_A)
+    drainer = _drainer(
+        db, StubChannel(), operator_topic="inkling-operator-test",
+        extra_channels={"apns": _PermanentStub()},
+    )
+    assert await drainer.drain(now=T) == 0
+
+    row = (await _rows(db, USER_A, "SELECT * FROM deliveries WHERE id=%s", (delivery_id,)))[0]
+    assert row["status"] == "dead_letter"
+    assert row["attempt_count"] == 1
+    assert "unregistered" in row["last_error"]
+    alerts = await _rows(
+        db, USER_A, "SELECT * FROM deliveries WHERE destination=%s",
+        ("inkling-operator-test",),
+    )
+    assert len(alerts) == 1 and alerts[0]["channel"] == "ntfy"
+
+
+async def test_apns_rows_route_to_the_apns_channel(db: Database):
+    delivery_id = await _enqueue(db, channel="apns", destination=USER_A)
+    ntfy, apns = StubChannel(), StubChannel()
+    drainer = _drainer(db, ntfy, extra_channels={"apns": apns})
+    assert await drainer.drain(now=T) == 1
+    assert ntfy.sent == []
+    assert apns.sent == [{"topic": USER_A, "body": "reminder: file taxes", "title": "Inkling"}]
+    row = (await _rows(db, USER_A, "SELECT * FROM deliveries WHERE id=%s", (delivery_id,)))[0]
+    assert row["status"] == "sent"
+
+
+async def test_apns_row_without_channel_configured_dead_letters(db: Database):
+    """APNS_KEY_FILE unset: honest failure through the normal ladder."""
+    await _enqueue(db, channel="apns", destination=USER_A)
+    drainer = _drainer(db, StubChannel())
+    assert await drainer.drain(now=T) == 0
+    row = (await _rows(db, USER_A, "SELECT * FROM deliveries"))[0]
+    assert row["status"] == "retry_wait"
+    assert "no 'apns' channel" in row["last_error"]

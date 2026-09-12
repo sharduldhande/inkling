@@ -962,7 +962,8 @@ async def test_notify_queues_a_delivery_and_sends_nothing(db: Database):
     rows = await _rows(db, USER_A, "SELECT * FROM deliveries")
     assert rows[0]["status"] == "queued", "delivery happens after commit, via §11"
     assert rows[0]["sent_at"] is None
-    assert rows[0]["destination"] == f"inkling-{USER_A}-test"
+    assert rows[0]["channel"] == "apns"
+    assert rows[0]["destination"] == USER_A, "the apns channel fans out per device"
     assert rows[0]["idempotency_key"] == f"turn:{turn_id}:notify:0"
 
 

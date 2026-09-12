@@ -485,16 +485,19 @@ async def _apply_notify(
     *,
     user_id: str,
     turn_id: int,
-    ntfy_topic: str,
     index: int,
 ) -> dict[str, Any]:
     # The key is derived from turn and position, so a replayed turn re-proposes
     # the same key and the ON CONFLICT drops it: at most one push per Notify.
+    # destination is the user: the apns channel fans out to whatever devices
+    # are registered at send time, so a phone registered during a quiet-hours
+    # deferral still gets the push.
     key = f"turn:{turn_id}:notify:{index}"
     row = await deliveries_q.enqueue(
         conn,
         user_id=user_id,
-        destination=ntfy_topic,
+        channel="apns",
+        destination=user_id,
         body=cmd.body,
         idempotency_key=key,
         turn_id=turn_id,
@@ -568,7 +571,6 @@ async def apply_command(
             cmd,
             user_id=user_id,
             turn_id=turn_id,
-            ntfy_topic=user["ntfy_topic"],
             index=index,
         )
     # CreateCalendarEvent is rejected in validate.py until §12 lands; anything

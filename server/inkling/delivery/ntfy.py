@@ -1,6 +1,10 @@
-"""ntfy channel adapter (§11).
+"""ntfy channel adapter (§11) — operator alerts only since the APNs cutover.
 
-The one place in the delivery path that talks to the network. The drainer
+User-facing pushes route to the 'apns' channel (delivery/apns.py); ntfy now
+carries dead-letter, backup and restore-drill alerts to OPERATOR_NTFY, where
+it must keep working precisely when the APNs path is broken.
+
+One of the two places in the delivery path that talk to the network. The drainer
 calls send() strictly outside any database transaction (§5.4), treats any
 exception as a failed attempt, and owns retry/backoff — this module just
 performs one POST and reports honestly.
@@ -24,6 +28,10 @@ TIMEOUT_SECONDS = 10.0
 
 class DeliveryError(Exception):
     """One attempt failed; the drainer decides whether to retry."""
+
+
+class PermanentDeliveryError(DeliveryError):
+    """No retry will help (every device token revoked); dead-letter now."""
 
 
 class Channel(Protocol):

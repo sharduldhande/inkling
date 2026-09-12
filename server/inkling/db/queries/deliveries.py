@@ -94,7 +94,7 @@ async def enqueue(
     idempotency_key: str,
     occurrence_id: int | None = None,
     turn_id: int | None = None,
-    channel: str = "ntfy",
+    channel: str = "ntfy",  # the column default; user pushes pass "apns"
     not_before: Any = None,
     expires_at: Any = None,
 ) -> dict[str, Any] | None:

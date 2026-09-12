@@ -597,7 +597,7 @@ async def validate_commands(
                 # rows. Only a claim with no Notify in-batch AND no recent
                 # delivery is the poison case.
                 cur = await conn.execute(
-                    "SELECT 1 FROM deliveries WHERE channel = 'ntfy' "
+                    "SELECT 1 FROM deliveries WHERE channel = 'apns' "
                     "AND created_at > now() - interval '20 minutes' LIMIT 1"
                 )
                 if await cur.fetchone() is None:

@@ -12,6 +12,12 @@ class Config(BaseSettings):
     chat_tokens_file: str = ""
     ntfy_base: str = "https://ntfy.sh"
     operator_ntfy: str = ""  # §11 dead-letter alerts; empty disables them
+    # APNs provider auth (§11): user pushes go straight to Apple. Empty key
+    # file disables the channel — Notify rows then dead-letter and page ntfy.
+    apns_key_file: str = ""  # ~/.inkling/apns-AuthKey_<KEYID>.p8
+    apns_key_id: str = ""
+    apns_team_id: str = "LJA3588388"
+    apns_topic: str = "com.sharduldhande.inkling"  # bundle id
 
     backup_s3_endpoint: str = ""
     backup_s3_bucket: str = ""

@@ -26,6 +26,8 @@ Fresh VPS (Debian/Ubuntu assumed) to a running service:
    # Restore, each chmod 600:
    #   ~/.inkling/env                  (from .env.example, fill real values)
    #   ~/.inkling/chat-tokens.json     {"<user>": "<bearer>"}
+   #   ~/.inkling/apns-AuthKey_<ID>.p8 APNs provider key (Apple Developer → Keys;
+   #                                   downloadable ONCE — the password manager copy is canonical)
    #   ~/.inkling/claude-<user>/       per-user CLAUDE_CONFIG_DIR (subscription auth)
    #   ~/.inkling/anthropic-<user>.key per-user API keys (metered auth)
    #   ~/.inkling/google-<user>.json   calendar OAuth (only if calendar on)
@@ -62,7 +64,14 @@ Fresh VPS (Debian/Ubuntu assumed) to a running service:
   backup failures, restore-drill failures.
 - **Dead letters**: `SELECT * FROM deliveries WHERE status='dead_letter'` (as
   owner). At-least-once is the contract; a dead letter means every retry
-  failed — usually ntfy or the calendar credential.
+  failed — usually APNs config (key/id/topic, VPS clock skew →
+  InvalidProviderToken), a user with no live `devices` row (app not opened
+  since install, or every token revoked), or the calendar credential.
+- **Devices**: `SELECT user_id, environment, left(token,8), revoked_at,
+  revoke_reason FROM devices` (as owner). A revoked row revives when the app
+  next launches. If a phone moves to another user's bearer token its POST is
+  refused (409) and the OLD user's row keeps receiving until you
+  `UPDATE devices SET revoked_at=now(), revoke_reason='operator'` it.
 
 ## Backup & restore (§13.2/§13.3)
 

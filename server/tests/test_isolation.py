@@ -147,6 +147,16 @@ async def deliveries_factory(conn, row_user):
     )
 
 
+async def devices_factory(conn, row_user):
+    await conn.execute(
+        """
+        INSERT INTO devices (user_id, token, environment)
+        VALUES (%s, %s, 'development')
+        """,
+        (row_user, uuid.uuid4().hex * 2),
+    )
+
+
 async def docs_factory(conn, row_user):
     await conn.execute(
         """
@@ -229,6 +239,7 @@ TABLE_FACTORIES = {
     "workouts": workouts_factory,
     "body_metrics": body_metrics_factory,
     "deliveries": deliveries_factory,
+    "devices": devices_factory,
     "docs": docs_factory,
     "transcript": transcript_factory,
     "scheduled_wakeups": scheduled_wakeups_factory,

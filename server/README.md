@@ -26,5 +26,7 @@ uv run pytest
 ```sh
 python -m inkling migrate   # apply migrations (uses DATABASE_URL_MIGRATE)
 python -m inkling seed --user shardul --name Shardul --tz America/New_York \
-  --ntfy-topic <topic> --inference-profile '{"type":"subscription","config_dir":"..."}'
+  --inference-profile '{"type":"subscription","config_dir":"..."}'
+# Pushes reach the user once the app registers its APNs token (POST /devices);
+# --ntfy-topic is legacy and optional.
 ```
