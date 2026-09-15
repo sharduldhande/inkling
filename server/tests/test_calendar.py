@@ -1,38 +1,31 @@
-"""Calendar (§12): relevance gate, cursor sync, hints, create-via-outbox.
+"""Calendar (§12): relevance gate, feed registration, snapshot sync, read-only.
 
 Runs as runtime_role against the Neon test branch; the provider is always
-StubProvider — google.py is HTTP shape only and needs real credentials (§19.2).
+StubProvider (the ICS parser has its own pure tests in test_ics.py).
 """
 
-import json
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from inkling.api.auth import Roster
-from inkling.api.server import create_app
-from inkling.calendar_.adapter import NormalizedEvent, StubProvider, SyncPage
-from inkling.calendar_.channel import CalendarChannel
+from inkling.calendar_ import adapter as adapter_mod
+from inkling.calendar_ import ics as ics_mod
+from inkling.calendar_.adapter import NormalizedEvent, Snapshot, StubProvider
+from inkling.calendar_.config import FeedSpec
 from inkling.calendar_.sync import CalendarSync, passes_gate, plan_blocks
 from inkling.db.client import Database
-from inkling.db.queries import users as users_q
-from inkling.delivery.ntfy import StubChannel
-from inkling.delivery.outbox import Drainer
-from inkling.inference.gateway import StubGateway, TurnResult
-from inkling.turns import ingress
-from inkling.turns.commands import parse_commands
-from inkling.turns.commit import commit_turn
-from inkling.turns.validate import validate_commands
-from inkling.turns.worker import Worker
+from inkling.turns.commands import commands_json_schema
 
 from tests.conftest import USER_A
 
 UTC = timezone.utc
 NY = ZoneInfo("America/New_York")
 NOW = datetime(2026, 7, 17, 18, 0, tzinfo=UTC)  # 14:00 EDT
+
+FEEDS = [FeedSpec(id="primary", name="Personal", url="https://example.test/a.ics")]
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -44,7 +37,6 @@ async def clean(migrated: str, dsn: str):
             "scheduled_wakeups, deliveries, calendar_events_cache, "
             "calendar_sync_state RESTART IDENTITY CASCADE"
         )
-        conn.execute("UPDATE users SET calendar_enabled = false")
         conn.commit()
     yield
 
@@ -55,25 +47,6 @@ async def _rows(db: Database, user_id: str, sql: str, args=()):
         return await cur.fetchall()
 
 
-def _enable_calendar(dsn: str, user_id: str = USER_A) -> None:
-    with psycopg.connect(dsn) as conn:
-        conn.execute("UPDATE users SET calendar_enabled = true WHERE id = %s", (user_id,))
-        conn.commit()
-
-
-async def _seed_state(
-    db: Database, *, calendar_id: str = "primary", channel_id: str | None = None
-) -> None:
-    async with db.with_tenant(USER_A) as conn:
-        await conn.execute(
-            "INSERT INTO calendar_sync_state "
-            "(user_id, provider, calendar_id, channel_id, oauth_token_file) "
-            "VALUES (%s, 'google', %s, %s, '/dev/null') "
-            "ON CONFLICT (user_id, provider, calendar_id) DO NOTHING",
-            (USER_A, calendar_id, channel_id),
-        )
-
-
 def _evt(
     event_id: str,
     *,
@@ -82,6 +55,7 @@ def _evt(
     summary: str = "Dentist",
     revision: str = "r1",
     status: str = "confirmed",
+    all_day: bool = False,
 ) -> NormalizedEvent:
     start = NOW + starts_in
     return NormalizedEvent(
@@ -92,12 +66,29 @@ def _evt(
         starts_at=start,
         ends_at=start + duration,
         status=status,
-        raw={"id": event_id},
+        all_day=all_day,
+        raw={"uid": event_id},
     )
 
 
+def _cached(event: NormalizedEvent, **overrides):
+    row = {
+        "revision": event.revision, "starts_at": event.starts_at,
+        "ends_at": event.ends_at, "summary": event.summary,
+        "status": "confirmed", "all_day": event.all_day,
+    }
+    row.update(overrides)
+    return row
+
+
 def _sync(db: Database, provider: StubProvider, **kwargs) -> CalendarSync:
-    return CalendarSync(db, [USER_A], provider, **kwargs)
+    return CalendarSync(db, provider, {USER_A: FEEDS}, **kwargs)
+
+
+async def _registered(db: Database, provider: StubProvider | None = None) -> CalendarSync:
+    sync = _sync(db, provider or StubProvider())
+    await sync.register_feeds()
+    return sync
 
 
 # --- the deterministic relevance gate (§12) ---------------------------------
@@ -137,7 +128,6 @@ def test_gate_beyond_72h_fails_even_with_overlap():
 
 
 def test_gate_plan_block_overlap_passes_on_a_later_day():
-    # 10:00-11:00 EDT tomorrow; plan block 09:30-10:30.
     event = _evt("e1", starts_in=timedelta(hours=24))  # 14:00 EDT tomorrow
     assert not passes_gate(
         event, cached=None, now=NOW, tz=NY,
@@ -160,267 +150,204 @@ def test_gate_commitment_window_overlap_passes():
 
 def test_gate_immaterial_revision_bump_fails():
     event = _evt("e1", starts_in=timedelta(hours=2), revision="r2")
-    cached = {
-        "created_by_us": False, "revision": "r1",
-        "starts_at": event.starts_at, "ends_at": event.ends_at,
-        "summary": event.summary,
-    }
     assert not passes_gate(
-        event, cached=cached, now=NOW, tz=NY, plan_text="", commitment_windows=[],
+        event, cached=_cached(event, revision="r1"), now=NOW, tz=NY,
+        plan_text="", commitment_windows=[],
     )
 
 
-def test_gate_skips_events_we_created():
-    event = _evt("e1", starts_in=timedelta(hours=2))
-    cached = {
-        "created_by_us": True, "revision": "r0",
-        "starts_at": event.starts_at - timedelta(hours=1),
-        "ends_at": event.ends_at, "summary": "moved",
-    }
+def test_gate_cancellation_of_a_known_event_passes():
+    event = _evt("e1", starts_in=timedelta(hours=2), status="cancelled")
+    assert passes_gate(
+        event, cached=_cached(event), now=NOW, tz=NY,
+        plan_text="", commitment_windows=[],
+    )
+    # ...but a cancellation we never knew about isn't news.
     assert not passes_gate(
-        event, cached=cached, now=NOW, tz=NY, plan_text="", commitment_windows=[],
+        event, cached=None, now=NOW, tz=NY, plan_text="", commitment_windows=[],
     )
 
 
-# --- cursor sync (§12) ------------------------------------------------------
+# --- feed registration -------------------------------------------------------
 
 
-async def test_initial_sync_caches_events_and_gates_deltas(db: Database):
-    await _seed_state(db)
+async def test_register_feeds_mirrors_config_and_disables_missing(db: Database):
     provider = StubProvider()
-    provider.pages = [SyncPage(
+    two = CalendarSync(db, provider, {USER_A: FEEDS + [
+        FeedSpec(id="work", name="Work", url="https://example.test/w.ics")
+    ]})
+    await two.register_feeds()
+    async with db.with_tenant(USER_A) as conn:
+        await conn.execute(
+            "UPDATE calendar_sync_state SET sync_cursor = 'etag:v1' "
+            "WHERE calendar_id = 'primary'"
+        )
+    rows = await _rows(db, USER_A, "SELECT * FROM calendar_sync_state ORDER BY calendar_id")
+    assert [(r["calendar_id"], r["summary"], r["enabled"]) for r in rows] == [
+        ("primary", "Personal", True), ("work", "Work", True),
+    ]
+    assert all(r["provider"] == "ics" for r in rows)
+
+    # Drop 'work' from the file: disabled, not deleted; the other cursor survives.
+    await _registered(db, provider)
+    rows = await _rows(db, USER_A, "SELECT * FROM calendar_sync_state ORDER BY calendar_id")
+    assert [(r["calendar_id"], r["enabled"], r["sync_cursor"]) for r in rows] == [
+        ("primary", True, "etag:v1"), ("work", False, None),
+    ]
+
+
+# --- snapshot sync (§12) -----------------------------------------------------
+
+
+async def test_snapshot_caches_events_and_gates_deltas(db: Database):
+    provider = StubProvider()
+    provider.snapshots = [Snapshot(
         events=[
             _evt("today", starts_in=timedelta(hours=2)),      # passes: new same-day
             _evt("nextweek", starts_in=timedelta(days=40)),   # fails: beyond 72h
+            _evt("holiday", starts_in=timedelta(days=3), all_day=True,
+                 duration=timedelta(days=1), summary="Labor Day"),
         ],
-        next_cursor="cursor-1",
+        cursor="etag:1",
     )]
+    sync = await _registered(db, provider)
 
-    passed = await _sync(db, provider).sync_calendar(USER_A, "primary", now=NOW)
+    passed = await sync.sync_calendar(USER_A, "primary", now=NOW)
 
     assert passed == 1
     cache = await _rows(db, USER_A, "SELECT * FROM calendar_events_cache ORDER BY provider_event_id")
-    assert len(cache) == 2  # everything cached, relevant or not
+    assert [r["provider_event_id"] for r in cache] == ["holiday", "nextweek", "today"]
+    assert cache[0]["all_day"] is True and cache[2]["all_day"] is False
+    assert all(r["status"] == "confirmed" for r in cache)
     triggers = await _rows(db, USER_A, "SELECT * FROM triggers")
     assert len(triggers) == 1
     assert triggers[0]["source"] == "calendar"
     assert triggers[0]["priority"] == 3
     assert triggers[0]["payload"]["kind"] == "delta"
-    assert "Dentist" in triggers[0]["payload"]["text"]
+    assert "new event 'Dentist'" in triggers[0]["payload"]["text"]
+    assert triggers[0]["payload"]["event"]["all_day"] is False
     state = (await _rows(db, USER_A, "SELECT * FROM calendar_sync_state"))[0]
-    assert state["sync_cursor"] == "cursor-1"
+    assert state["sync_cursor"] == "etag:1"
+    assert state["last_synced_at"] is not None
+    assert provider.calls[0]["cursor"] is None
+    assert provider.calls[0]["window_start"] == NOW - timedelta(days=7)
+
+
+async def test_unchanged_snapshot_touches_last_synced_only(db: Database):
+    provider = StubProvider()
+    provider.snapshots = [
+        Snapshot(events=[_evt("today", starts_in=timedelta(hours=2))], cursor="etag:1"),
+        Snapshot(events=[], cursor="etag:1", unchanged=True),
+    ]
+    sync = await _registered(db, provider)
+    await sync.sync_calendar(USER_A, "primary", now=NOW)
+    before = (await _rows(db, USER_A, "SELECT * FROM calendar_sync_state"))[0]
+
+    passed = await sync.sync_calendar(USER_A, "primary", now=NOW + timedelta(minutes=5))
+
+    assert passed == 0
+    assert provider.calls[1]["cursor"] == "etag:1", "the ETag went back out"
+    after = (await _rows(db, USER_A, "SELECT * FROM calendar_sync_state"))[0]
+    assert after["sync_cursor"] == "etag:1"
+    assert after["last_synced_at"] >= before["last_synced_at"]
+    cache = await _rows(db, USER_A, "SELECT * FROM calendar_events_cache")
+    assert len(cache) == 1 and cache[0]["status"] == "confirmed"
+    assert len(await _rows(db, USER_A, "SELECT * FROM triggers")) == 1
 
 
 async def test_resync_of_same_revision_is_idempotent(db: Database):
-    await _seed_state(db)
     provider = StubProvider()
     event = _evt("today", starts_in=timedelta(hours=2))
-    provider.pages = [
-        SyncPage([event], "cursor-1"),
-        SyncPage([event], "cursor-2"),  # same revision arrives again
+    provider.snapshots = [
+        Snapshot(events=[event], cursor="etag:1"),
+        Snapshot(events=[event], cursor="etag:2"),  # feed changed elsewhere
     ]
-    sync = _sync(db, provider)
+    sync = await _registered(db, provider)
+    assert await sync.sync_calendar(USER_A, "primary", now=NOW) == 1
+    assert await sync.sync_calendar(USER_A, "primary", now=NOW) == 0
+    assert len(await _rows(db, USER_A, "SELECT * FROM triggers")) == 1
 
+
+async def test_moved_event_fires_once_per_revision(db: Database):
+    provider = StubProvider()
+    provider.snapshots = [
+        Snapshot(events=[_evt("today", starts_in=timedelta(hours=2))], cursor="etag:1"),
+        Snapshot(events=[_evt("today", starts_in=timedelta(hours=4), revision="r2")], cursor="etag:2"),
+    ]
+    sync = await _registered(db, provider)
     await sync.sync_calendar(USER_A, "primary", now=NOW)
+    assert await sync.sync_calendar(USER_A, "primary", now=NOW) == 1
+    triggers = await _rows(db, USER_A, "SELECT * FROM triggers ORDER BY id")
+    assert "moved to" in triggers[1]["payload"]["text"]
+    cache = (await _rows(db, USER_A, "SELECT * FROM calendar_events_cache"))[0]
+    assert cache["starts_at"] == NOW + timedelta(hours=4)
+
+
+async def test_removed_event_is_tombstoned_and_gated_as_cancellation(db: Database):
+    provider = StubProvider()
+    provider.snapshots = [
+        Snapshot(events=[
+            _evt("today", starts_in=timedelta(hours=2)),
+            _evt("later", starts_in=timedelta(days=20)),
+        ], cursor="etag:1"),
+        Snapshot(events=[], cursor="etag:2"),  # both vanished from the feed
+    ]
+    sync = await _registered(db, provider)
+    await sync.sync_calendar(USER_A, "primary", now=NOW)
+
     passed = await sync.sync_calendar(USER_A, "primary", now=NOW)
 
-    assert passed == 0  # not material against the cache; key would block anyway
-    assert len(await _rows(db, USER_A, "SELECT 1 FROM triggers")) == 1
-
-
-async def test_cursor_gone_runs_bounded_full_resync(db: Database):
-    await _seed_state(db)
-    async with db.with_tenant(USER_A) as conn:
-        await conn.execute(
-            "UPDATE calendar_sync_state SET sync_cursor = 'stale' WHERE user_id = %s",
-            (USER_A,),
-        )
-    provider = StubProvider()
-    provider.raise_cursor_gone = True
-    provider.pages = [SyncPage([], "cursor-fresh")]
-
-    await _sync(db, provider).sync_calendar(USER_A, "primary", now=NOW)
-
-    full = [c for c in provider.calls if c["op"] == "initial_sync"]
-    assert len(full) == 1
-    assert full[0]["window_start"] == NOW - timedelta(days=60)
-    assert full[0]["window_end"] == NOW + timedelta(days=60)
-    state = (await _rows(db, USER_A, "SELECT * FROM calendar_sync_state"))[0]
-    assert state["sync_cursor"] == "cursor-fresh"
-    assert state["last_full_resync_at"] is not None
-
-
-# --- webhook hints (§12) ----------------------------------------------------
-
-
-async def test_worker_never_claims_hint_triggers(db: Database):
-    await ingress.submit(
-        db, user_id=USER_A, source="calendar",
-        source_ref="primary", payload={"kind": "hint"},
-    )
-    worker = Worker(db, USER_A, StubGateway())
-    assert await worker.claim() is None  # hint invisible to the turn path
-
-    await ingress.submit(db, user_id=USER_A, source="chat", payload={"text": "hi"})
-    claimed = await worker.claim()
-    assert claimed is not None
-    assert claimed[0]["source"] == "chat"  # hint doesn't block real work
-
-
-async def test_process_hints_claims_syncs_and_settles(db: Database):
-    await _seed_state(db)
-    await ingress.submit(
-        db, user_id=USER_A, source="calendar",
-        source_ref="primary", payload={"kind": "hint"},
-    )
-    provider = StubProvider()
-
-    assert await _sync(db, provider).process_hints() == 1
-
-    assert any(c["op"] == "initial_sync" for c in provider.calls)  # no cursor yet
-    hint = (await _rows(db, USER_A, "SELECT * FROM triggers"))[0]
-    assert hint["status"] == "done"
-
-
-async def test_webhook_validates_channel_and_coalesces(db: Database, dsn: str):
-    await _seed_state(db, channel_id="chan-123")
-    app = create_app(db, Roster({USER_A: "tok"}))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
-        for _ in range(2):
-            response = await client.post(
-                "/calendar/webhook/google",
-                headers={"X-Goog-Channel-ID": "chan-123",
-                         "X-Goog-Resource-State": "exists"},
-            )
-            assert response.status_code == 200
-        unknown = await client.post(
-            "/calendar/webhook/google",
-            headers={"X-Goog-Channel-ID": "who-dis",
-                     "X-Goog-Resource-State": "exists"},
-        )
-        assert unknown.status_code == 200  # uniform response, nothing enqueued
-        handshake = await client.post(
-            "/calendar/webhook/google",
-            headers={"X-Goog-Channel-ID": "chan-123",
-                     "X-Goog-Resource-State": "sync"},
-        )
-        assert handshake.status_code == 200
-
+    assert passed == 1, "today's cancellation is news; the far one isn't"
+    cache = await _rows(db, USER_A, "SELECT * FROM calendar_events_cache ORDER BY provider_event_id")
+    assert [(r["provider_event_id"], r["status"]) for r in cache] == [
+        ("later", "cancelled"), ("today", "cancelled"),
+    ]
     triggers = await _rows(db, USER_A, "SELECT * FROM triggers ORDER BY id")
-    assert len(triggers) == 2  # two real pings; second coalesced, none for others
-    assert triggers[0]["status"] == "pending"
-    assert triggers[1]["status"] == "coalesced"
+    assert "'Dentist'" in triggers[1]["payload"]["text"]
+    assert "was cancelled" in triggers[1]["payload"]["text"]
+    assert triggers[1]["payload"]["event"]["status"] == "cancelled"
+
+    # A tombstoned event that reappears is new again.
+    provider.snapshots = [Snapshot(
+        events=[_evt("today", starts_in=timedelta(hours=2))], cursor="etag:3",
+    )]
+    assert await sync.sync_calendar(USER_A, "primary", now=NOW) == 1
+    row = (await _rows(db, USER_A,
+        "SELECT * FROM calendar_events_cache WHERE provider_event_id = 'today'"))[0]
+    assert row["status"] == "confirmed"
 
 
-async def test_channel_renewal_updates_expiring_channels(db: Database):
-    await _seed_state(db, channel_id="chan-old")
-    async with db.with_tenant(USER_A) as conn:
-        await conn.execute(
-            "UPDATE calendar_sync_state SET channel_expires_at = %s",
-            (NOW + timedelta(hours=2),),  # inside the renew-before window
-        )
-    provider = StubProvider()
+async def test_sync_all_covers_enabled_feeds_and_survives_a_bad_one(db: Database):
+    class Flaky(StubProvider):
+        async def snapshot(self, *, calendar_id, **kw):
+            if calendar_id == "broken":
+                raise RuntimeError("503 from the feed host")
+            return await super().snapshot(calendar_id=calendar_id, **kw)
 
-    renewed = await _sync(db, provider, webhook_url="https://x/hook").renew_channels(now=NOW)
+    provider = Flaky()
+    provider.snapshots = [Snapshot(
+        events=[_evt("today", starts_in=timedelta(hours=2))], cursor="etag:1",
+    )]
+    sync = CalendarSync(db, provider, {USER_A: FEEDS + [
+        FeedSpec(id="broken", name="Broken", url="https://example.test/x.ics"),
+    ]})
+    await sync.register_feeds()
 
-    assert renewed == 1
-    state = (await _rows(db, USER_A, "SELECT * FROM calendar_sync_state"))[0]
-    assert state["channel_id"].startswith("chan-")
-    assert state["channel_id"] != "chan-old"
-    assert state["channel_expires_at"] > NOW + timedelta(days=1)
-
-
-# --- CreateCalendarEvent via the outbox (§12 write path) --------------------
-
-
-async def test_create_event_requires_enabled_and_owned_calendar(db: Database, dsn: str):
-    raw = [{
-        "type": "CreateCalendarEvent", "calendar_id": "primary",
-        "summary": "Focus", "starts_at": (NOW + timedelta(hours=2)).isoformat(),
-        "ends_at": (NOW + timedelta(hours=3)).isoformat(),
-    }]
-    async with db.with_tenant(USER_A) as conn:
-        user = await users_q.get(conn, USER_A)
-        verdict = await validate_commands(conn, user=user, commands=parse_commands(raw))
-    assert verdict.rejected[0].reason == "calendar is not enabled for this user"
-
-    _enable_calendar(dsn)
-    async with db.with_tenant(USER_A) as conn:
-        user = await users_q.get(conn, USER_A)
-        verdict = await validate_commands(conn, user=user, commands=parse_commands(raw))
-    assert "not one of your configured calendars" in verdict.rejected[0].reason
-
-    await _seed_state(db)
-    async with db.with_tenant(USER_A) as conn:
-        user = await users_q.get(conn, USER_A)
-        verdict = await validate_commands(conn, user=user, commands=parse_commands(raw))
-    assert verdict.accepted and not verdict.rejected
+    assert await sync.sync_all(now=NOW) == 1
+    states = await _rows(db, USER_A, "SELECT * FROM calendar_sync_state ORDER BY calendar_id")
+    assert states[0]["calendar_id"] == "broken" and states[0]["last_synced_at"] is None
+    assert states[1]["calendar_id"] == "primary" and states[1]["last_synced_at"] is not None
 
 
-async def test_create_event_flows_through_outbox_to_provider(db: Database, dsn: str):
-    _enable_calendar(dsn)
-    await _seed_state(db)
-    sub = await ingress.submit(db, user_id=USER_A, source="chat", payload={"text": "book it"})
-    async with db.with_tenant(USER_A) as conn:
-        cur = await conn.execute("SELECT * FROM triggers WHERE id = %s", (sub.trigger_id,))
-        trigger = await cur.fetchone()
-        cur = await conn.execute(
-            "INSERT INTO turns (user_id, trigger_id, status) "
-            "VALUES (%s, %s, 'running') RETURNING id",
-            (USER_A, sub.trigger_id),
-        )
-        turn_id = int((await cur.fetchone())["id"])
-    await commit_turn(
-        db, user_id=USER_A, trigger=trigger, turn_id=turn_id,
-        result=TurnResult(
-            text="booked",
-            commands=parse_commands([{
-                "type": "CreateCalendarEvent", "calendar_id": "primary",
-                "summary": "Focus block",
-                "starts_at": (NOW + timedelta(hours=2)).isoformat(),
-                "ends_at": (NOW + timedelta(hours=3)).isoformat(),
-            }]),
-            model="stub", input_tokens=0, output_tokens=0,
-        ),
-        next_seq=1, actor="test",
-    )
-
-    row = (await _rows(db, USER_A, "SELECT * FROM deliveries"))[0]
-    assert row["channel"] == "calendar"
-    assert row["destination"] == "primary"
-
-    provider = StubProvider()
-    drainer = Drainer(
-        db, [USER_A], channel=StubChannel(),
-        extra_channels={"calendar": CalendarChannel(db, provider)},
-    )
-    assert await drainer.drain() == 1
-
-    assert provider.created[0]["summary"] == "Focus block"
-    cache = (await _rows(db, USER_A, "SELECT * FROM calendar_events_cache"))[0]
-    assert cache["created_by_us"] is True
-    sent = (await _rows(db, USER_A, "SELECT * FROM deliveries"))[0]
-    assert sent["status"] == "sent"
-    assert sent["provider_msg_id"] == "created-1"
+# --- read-only, structurally ---------------------------------------------------
 
 
-async def test_unconfigured_calendar_channel_degrades_honestly(db: Database, dsn: str):
-    """A calendar delivery with no channel dead-letters instead of vanishing."""
-    _enable_calendar(dsn)
-    await _seed_state(db)
-    async with db.with_tenant(USER_A) as conn:
-        from inkling.db.queries import deliveries as deliveries_q
-
-        await deliveries_q.enqueue(
-            conn, user_id=USER_A, channel="calendar", destination="primary",
-            body="{}", idempotency_key="cal-test-1",
-            # Pin dueness: created_at is DB wall clock, which can sit a few ms
-            # AHEAD of the drainer's local now — the repo-wide gotcha.
-            not_before=datetime.now(timezone.utc) - timedelta(seconds=5),
-        )
-    drainer = Drainer(db, [USER_A], channel=StubChannel())  # no calendar channel
-
-    assert await drainer.drain() == 0
-    row = (await _rows(db, USER_A, "SELECT * FROM deliveries"))[0]
-    assert row["status"] == "retry_wait"
-    assert "no 'calendar' channel configured" in row["last_error"]
+def test_no_calendar_write_surface_exists():
+    """§0 non-goal: no code path can create, change, or delete a calendar event."""
+    forbidden = re.compile(r"create|update|delete|insert|patch|put|post|write", re.I)
+    for cls in (adapter_mod.CalendarProvider, StubProvider, ics_mod.IcsProvider):
+        offenders = [n for n in dir(cls) if not n.startswith("_") and forbidden.search(n)]
+        assert offenders == [], f"{cls.__name__} exposes {offenders}"
+    assert not hasattr(adapter_mod, "SyncPage")
+    rendered = str(commands_json_schema())
+    assert "Calendar" not in rendered, "no calendar command of any kind in the model's schema"

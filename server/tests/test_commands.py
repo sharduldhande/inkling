@@ -952,7 +952,7 @@ async def test_cannot_cancel_another_users_wakeup(db: Database):
     assert rows[0]["status"] == "active"
 
 
-# --- Notify and calendar ----------------------------------------------------
+# --- Notify ---------------------------------------------------------------
 
 
 async def test_notify_queues_a_delivery_and_sends_nothing(db: Database):
@@ -965,41 +965,6 @@ async def test_notify_queues_a_delivery_and_sends_nothing(db: Database):
     assert rows[0]["channel"] == "apns"
     assert rows[0]["destination"] == USER_A, "the apns channel fans out per device"
     assert rows[0]["idempotency_key"] == f"turn:{turn_id}:notify:0"
-
-
-async def test_calendar_event_rejected_when_calendar_disabled(db: Database):
-    verdict = await _validate(
-        db,
-        USER_A,
-        [
-            {
-                "type": "CreateCalendarEvent",
-                "calendar_id": "primary",
-                "summary": "lunch",
-                "starts_at": (_now() + timedelta(days=1)).isoformat(),
-                "ends_at": (_now() + timedelta(days=1, hours=1)).isoformat(),
-            }
-        ],
-    )
-    assert "not enabled" in verdict.rejected[0].reason
-
-
-async def test_calendar_event_rejected_for_absurd_duration(db: Database, dsn: str):
-    _set_calendar_enabled(dsn, USER_A, True)
-    verdict = await _validate(
-        db,
-        USER_A,
-        [
-            {
-                "type": "CreateCalendarEvent",
-                "calendar_id": "primary",
-                "summary": "lunch",
-                "starts_at": (_now() + timedelta(days=1)).isoformat(),
-                "ends_at": (_now() + timedelta(days=9)).isoformat(),
-            }
-        ],
-    )
-    assert "longer than a day" in verdict.rejected[0].reason
 
 
 # --- how rejection reaches the user (§9.2 honest degradation) ---------------

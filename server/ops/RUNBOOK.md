@@ -30,7 +30,7 @@ Fresh VPS (Debian/Ubuntu assumed) to a running service:
    #                                   downloadable ONCE — the password manager copy is canonical)
    #   ~/.inkling/claude-<user>/       per-user CLAUDE_CONFIG_DIR (subscription auth)
    #   ~/.inkling/anthropic-<user>.key per-user API keys (metered auth)
-   #   ~/.inkling/google-<user>.json   calendar OAuth (only if calendar on)
+   #   ~/.inkling/calendars-<user>.json calendar feed URLs (only if calendar on; see Calendar below)
    #   ~/.inkling/backup-gpg/          gpg PUBLIC key; import: gpg --import
    # The gpg PRIVATE key lives offline only — the box encrypts, never decrypts.
    ```
@@ -93,8 +93,44 @@ Fresh VPS (Debian/Ubuntu assumed) to a running service:
 
 - Bearer token: edit chat-tokens.json + the iOS app setting; restart.
 - Anthropic key / Claude config dir: replace the file/dir; per-turn pickup, no restart.
-- Google OAuth: re-run the consent flow into google-<user>.json.
+- Calendar feed URLs: edit calendars-<user>.json (reset the secret address in
+  Google / re-publish in iCloud first if the old link may have leaked); restart.
 - Neon passwords: rotate in Neon console, update ~/.inkling/env, restart.
+
+## Calendar (§12, read-only ICS feeds)
+
+Inkling only ever reads calendars. There is no OAuth, no write path, and no
+command the model can emit to touch a calendar.
+
+1. Collect one ICS address per calendar:
+   - Google: calendar.google.com → Settings → the calendar → "Integrate
+     calendar" → **Secret address in iCal format**. Shared/holiday calendars
+     you see in Google have one too. For a calendar you subscribed to by URL,
+     use the original URL (Google does not re-serve it).
+   - iCloud: Calendar app → info button next to the calendar → **Public
+     Calendar** on → copy the `webcal://` link.
+2. Write `~/.inkling/calendars-<user>.json`, `chmod 600`:
+   ```json
+   {"calendars": [
+     {"id": "personal", "name": "Personal", "url": "https://calendar.google.com/calendar/ical/.../private-.../basic.ics"},
+     {"id": "family",   "name": "Family",   "url": "webcal://p12-caldav.icloud.com/published/2/..."}
+   ]}
+   ```
+   `id` is lowercase `[a-z0-9_-]` and is what events are keyed by — renaming
+   an id re-imports that calendar (old rows tombstone, new rows appear).
+3. `systemctl --user restart inkling`; then `journalctl --user -u inkling |
+   grep -i calendar` shows "registered N calendar feed(s)" and one "synced
+   calendar" line per feed every 5 min (a 304 is silent).
+4. Verify (as owner): `SELECT calendar_id, summary, enabled, last_synced_at
+   FROM calendar_sync_state;` and `SELECT status, count(*) FROM
+   calendar_events_cache GROUP BY 1;`.
+
+Sharp edges: Google-hosted feeds are cached by Google and can lag minutes to
+hours behind the UI (feeds read from their original source are immediate).
+A malformed feed file disables only that user's calendar (logged at ERROR).
+Changing a user's timezone leaves already-cached all-day midnights as they
+were until the feed next changes; `UPDATE calendar_sync_state SET
+sync_cursor = NULL` forces a refetch.
 
 ## Known sharp edges
 

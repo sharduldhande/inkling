@@ -33,7 +33,8 @@ async def clean(migrated: str, dsn: str):
         conn.execute(
             "TRUNCATE turn_events, turns, triggers, transcript, audit_log, "
             "events, docs, commitment_occurrences, commitments, habits, "
-            "memory_facts, scheduled_wakeups, ingested_documents "
+            "memory_facts, scheduled_wakeups, ingested_documents, "
+            "calendar_events_cache, calendar_sync_state "
             "RESTART IDENTITY CASCADE"
         )
         conn.commit()
@@ -49,6 +50,26 @@ def _trigger(source: str = "chat", text: str = "hi", **overrides) -> dict:
     }
     row.update(overrides)
     return row
+
+
+async def _seed_calendar(db: Database, user_id: str, events=()) -> None:
+    """One enabled feed plus optional (id, summary, starts_at, ends_at,
+    all_day, status) rows — mirrors what CalendarSync would have written."""
+    async with db.with_tenant(user_id) as conn:
+        await conn.execute(
+            "INSERT INTO calendar_sync_state "
+            "(user_id, provider, calendar_id, summary) "
+            "VALUES (%s, 'ics', 'personal', 'Personal') "
+            "ON CONFLICT DO NOTHING",
+            (user_id,),
+        )
+        for event_id, summary, starts_at, ends_at, all_day, status in events:
+            await conn.execute(
+                "INSERT INTO calendar_events_cache (user_id, provider_event_id, "
+                "calendar_id, summary, starts_at, ends_at, all_day, status, raw) "
+                "VALUES (%s, %s, 'personal', %s, %s, %s, %s, %s, '{}')",
+                (user_id, event_id, summary, starts_at, ends_at, all_day, status),
+            )
 
 
 async def _seed_doc(db: Database, user_id: str, kind: str, content: str) -> None:
@@ -88,6 +109,7 @@ async def test_sections_appear_in_stable_to_volatile_order(db: Database):
     await _seed_doc(db, USER_A, "working_state", "# School\n- essay draft")
     await _seed_doc(db, USER_A, "daily_plan", "Morning: gym.")
     await _seed_transcript(db, USER_A, "user", "the essay is due Friday")
+    await _seed_calendar(db, USER_A)
 
     got = await assemble_context(
         db, user_id=USER_A,
@@ -101,6 +123,7 @@ async def test_sections_appear_in_stable_to_volatile_order(db: Database):
         "## Working state",
         "## Today's plan",
         "## Commitments (due / upcoming)",
+        "## Calendar (next 7 days, read-only)",
         "## Recent conversation",
         "## Possibly relevant past",
         "## Trigger",
@@ -135,6 +158,40 @@ async def test_commitments_and_working_state_present_even_when_empty(db: Databas
     assert "## Working state\n(none yet)" in got.context
     # Empty optional sections are skipped, not rendered hollow.
     assert "## Goals" not in got.context
+
+
+async def test_calendar_section_absent_without_a_feed_present_when_empty(db: Database):
+    got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
+    assert "## Calendar" not in got.context
+
+    await _seed_calendar(db, USER_A)
+    got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
+    assert "## Calendar (next 7 days, read-only)\n(none in the next 7 days)" in got.context
+
+
+async def test_calendar_section_renders_upcoming_and_hides_cancelled(db: Database):
+    now = datetime.now(timezone.utc)
+    ny = ZoneInfo("America/New_York")
+    tomorrow = (now + timedelta(days=1)).astimezone(ny).replace(
+        hour=9, minute=0, second=0, microsecond=0
+    )
+    day_after = (tomorrow + timedelta(days=1)).replace(hour=0, minute=0)
+    await _seed_calendar(db, USER_A, events=[
+        ("e1", "Dentist", tomorrow, tomorrow + timedelta(hours=1), False, "confirmed"),
+        ("e2", "Labor Day", day_after, day_after + timedelta(days=1), True, "confirmed"),
+        ("e3", "Old lunch", tomorrow, tomorrow + timedelta(hours=1), False, "cancelled"),
+        ("e4", "Far away", now + timedelta(days=20), now + timedelta(days=20, hours=1), False, "confirmed"),
+    ])
+
+    got = await assemble_context(db, user_id=USER_A, trigger=_trigger())
+
+    section = got.context.split("## Calendar (next 7 days, read-only)\n", 1)[1]
+    section = section.split("\n## ", 1)[0]
+    lines = section.splitlines()
+    assert lines[0] == f"- {tomorrow.strftime('%a %m-%d')} 09:00–10:00 Dentist [Personal]"
+    assert lines[1] == f"- {day_after.strftime('%a %m-%d')} all day Labor Day [Personal]"
+    assert "Old lunch" not in section
+    assert "Far away" not in section
 
 
 async def test_commitment_lines_carry_id_and_version_for_the_command_flow(db: Database):

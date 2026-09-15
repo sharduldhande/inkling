@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
-from inkling.api import routes_calendar, routes_chat, routes_health, routes_history
+from inkling.api import routes_chat, routes_health, routes_history
 from inkling.api import routes_devices, routes_documents, routes_panes
 from inkling.api.auth import Roster
 from inkling.api.broker import Broker
@@ -39,7 +39,6 @@ def create_app(
     *,
     broker: Broker | None = None,
     supervisor: Supervisor | None = None,
-    calendar_sync=None,
     uploads_dir: str = "",  # EXPORT_GIT_DIR; §14 originals land under uploads/
 ) -> FastAPI:
     @asynccontextmanager
@@ -57,13 +56,11 @@ def create_app(
     app.state.roster = roster
     app.state.broker = broker or Broker()
     app.state.supervisor = supervisor or _NoSupervisor()
-    app.state.calendar_sync = calendar_sync  # None when calendar is off (§12)
     app.state.uploads_dir = uploads_dir
 
     app.include_router(routes_health.router)
     app.include_router(routes_history.router)
     app.include_router(routes_chat.router)
-    app.include_router(routes_calendar.router)
     app.include_router(routes_panes.router)
     app.include_router(routes_documents.router)
     app.include_router(routes_devices.router)

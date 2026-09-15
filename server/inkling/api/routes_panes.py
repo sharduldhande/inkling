@@ -90,19 +90,24 @@ LIMIT 50
 
 _AGENDA_CALENDAR = """
 SELECT
-  'g:' || provider_event_id AS id,
-  coalesce(summary, '(untitled)') AS title,
-  (extract(epoch FROM starts_at) * 1000)::bigint AS starts,
+  'g:' || c.provider_event_id AS id,
+  coalesce(c.summary, '(untitled)') AS title,
+  (extract(epoch FROM c.starts_at) * 1000)::bigint AS starts,
   CASE
-    WHEN ends_at IS NULL THEN NULL
-    ELSE (extract(epoch FROM ends_at) * 1000)::bigint
-  END AS ends
-FROM calendar_events_cache
-WHERE user_id = %s
-  AND starts_at IS NOT NULL
-  AND coalesce(ends_at, starts_at) >= now()
-  AND starts_at <= now() + interval '48 hours'
-ORDER BY starts_at, provider_event_id
+    WHEN c.ends_at IS NULL THEN NULL
+    ELSE (extract(epoch FROM c.ends_at) * 1000)::bigint
+  END AS ends,
+  c.all_day
+FROM calendar_events_cache c
+LEFT JOIN calendar_sync_state s
+  ON s.user_id = c.user_id AND s.calendar_id = c.calendar_id
+WHERE c.user_id = %s
+  AND c.status <> 'cancelled'
+  AND coalesce(s.enabled, true)
+  AND c.starts_at IS NOT NULL
+  AND coalesce(c.ends_at, c.starts_at) >= now()
+  AND c.starts_at <= now() + interval '48 hours'
+ORDER BY c.starts_at, c.provider_event_id
 LIMIT 100
 """
 
@@ -288,6 +293,7 @@ async def agenda(
             "title": r["title"],
             "starts": int(r["starts"]),
             "ends": int(r["ends"]) if r["ends"] is not None else None,
+            "all_day": bool(r["all_day"]),
         }
         for r in calendar_rows
     )

@@ -28,8 +28,6 @@ class Config(BaseSettings):
     restore_drill_url: str = ""  # scratch DB for §13.3; empty skips the drill
 
     feature_embeddings: bool = False
-    google_oauth_client_id: str = ""
-    google_oauth_client_secret: str = ""
-    calendar_webhook_url: str = ""  # public URL Google pushes to (§12)
+    calendar_config_dir: str = "~/.inkling"  # calendars-<user>.json feed lists (§12)
     log_level: str = "info"
     log_format: str = "plain"  # "json" for journald (§15)

@@ -19,7 +19,7 @@ blocked on §19 human decisions, not on code.
 ## What the ⏳ items are waiting on (§19)
 
 - S3-compatible bucket + credentials, and a GPG keypair (public key on box).
-- Google OAuth client (only if calendar is wanted; system runs with it off).
+- Calendar feed file `calendars-<user>.json` (only if calendar is wanted; system runs without it). See RUNBOOK → Calendar.
 - The production Neon decision (use project `inkling`'s default branch, or a
   fresh project) + `migrate` + `seed`.
 - A VPS to deploy to, for the soak, iOS manual pass, and rebuild drill.
@@ -32,5 +32,5 @@ blocked on §19 human decisions, not on code.
 - Rate-limit honest-degradation in inference/gateway.py (TODO): a 429 from
   the model API currently surfaces as a turn error rather than a "brain is
   busy" notice.
-- google.py is live-API-untested until credentials exist (adapter logic is
-  stub-tested).
+- The ICS provider is parser-tested against a fixture feed and a mock
+  transport; the first live feed run is the operator smoke test (RUNBOOK).

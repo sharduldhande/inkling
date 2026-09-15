@@ -31,7 +31,6 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
-from inkling.db.queries import calendar as calendar_q
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import docs as docs_q
 from inkling.db.queries import documents as documents_q
@@ -43,7 +42,6 @@ from inkling.turns.commands import (
     CancelWakeup,
     Command,
     CompleteCommitment,
-    CreateCalendarEvent,
     LogMeal,
     LogWeight,
     LogWorkout,
@@ -76,9 +74,6 @@ MAX_REPLACEMENT_FRACTION = 0.8
 # §9.2: an event may be backdated freely (we often learn late) but must not be
 # dated into the future — that's a prediction, not an observation.
 FUTURE_EVENT_TOLERANCE = timedelta(minutes=5)
-
-# §9.2: calendar events longer than this are a parse error, not a plan.
-MAX_CALENDAR_DURATION = timedelta(hours=24)
 
 # §9.2 health bounds: generous enough for real life, tight enough that a
 # hallucinated number (a 65,000 kcal meal, a 40-hour run) is rejected with a
@@ -461,25 +456,6 @@ async def _validate_cancel_wakeup(
     return None
 
 
-async def _validate_calendar(
-    conn: AsyncConnection, cmd: CreateCalendarEvent, *, user: dict[str, Any]
-) -> str | None:
-    if not user["calendar_enabled"]:
-        return "calendar is not enabled for this user"
-    duration = _aware(cmd.ends_at) - _aware(cmd.starts_at)
-    if duration <= timedelta(0):
-        return "ends_at must be after starts_at"
-    if duration >= MAX_CALENDAR_DURATION:
-        return f"event spans {duration} — longer than a day is almost certainly a mistake"
-    # "Never on someone else's calendar" (§9.2): the target must be one of the
-    # user's own configured calendars. RLS scopes the lookup, so another
-    # user's calendar id simply reads as unknown.
-    states = await calendar_q.states(conn)
-    if not any(s["calendar_id"] == cmd.calendar_id for s in states):
-        return f"'{cmd.calendar_id}' is not one of your configured calendars"
-    return None
-
-
 async def _validate_notify(conn: AsyncConnection, cmd: Notify) -> str | None:
     if not cmd.body.strip():
         return "body is required"
@@ -612,8 +588,6 @@ async def validate_commands(
             reason = await _validate_schedule_wakeup(conn, cmd)
         elif isinstance(cmd, CancelWakeup):
             reason = await _validate_cancel_wakeup(conn, cmd)
-        elif isinstance(cmd, CreateCalendarEvent):
-            reason = await _validate_calendar(conn, cmd, user=user)
         elif isinstance(cmd, Notify):
             reason = await _validate_notify(conn, cmd)
         elif isinstance(cmd, UpdateDoc):

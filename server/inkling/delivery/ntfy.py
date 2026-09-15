@@ -40,7 +40,7 @@ class Channel(Protocol):
     ) -> str:
         """Deliver one message; returns the provider's message id.
 
-        `user_id` exists for channels whose auth is per-user (calendar);
+        `user_id` exists for channels whose routing is per-user (apns);
         ntfy ignores it — the topic is the whole address.
         """
         ...

@@ -24,6 +24,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from inkling.db.client import Database
+from inkling.db.queries import calendar as calendar_q
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import docs as docs_q
 from inkling.db.queries import documents as documents_q
@@ -53,6 +54,7 @@ BUDGETS = {
     "working_state": WORKING_STATE_TOKEN_CAP,  # 1200 hard cap, marker on excess
     "daily_plan": 400,
     "commitments": 400,  # never silently truncated; bounded by row limit below
+    "calendar": 400,
     "wakeups": 250,
     "pending_ingestion": 300,
     "today": 300,
@@ -70,6 +72,8 @@ TRANSCRIPT_TAIL = 40
 TAIL_GAP_MARKER = timedelta(minutes=30)
 COMMITMENTS_LIMIT = 20
 COMMITMENTS_HORIZON = timedelta(hours=48)
+CALENDAR_LIMIT = 40
+CALENDAR_HORIZON = timedelta(days=7)
 FACTS_LIMIT = 12
 EPISODES_LIMIT = 6
 TODAY_EVENTS_LIMIT = 40
@@ -147,6 +151,31 @@ def _clip_lines(lines: list[str], budget: int, marker: str, *, drop_head: bool) 
     if dropped:
         kept.insert(0 if drop_head else len(kept), marker)
     return "\n".join(kept)
+
+
+def _calendar_line(row: dict[str, Any], tz: ZoneInfo) -> str:
+    """`- Thu 09-11 09:00–10:00 Dentist [Personal]`; all-day rows say so."""
+    start = row["starts_at"].astimezone(tz)
+    end = row["ends_at"].astimezone(tz) if row["ends_at"] else None
+    day = start.strftime("%a %m-%d")
+    if row["all_day"]:
+        # Feeds give an exclusive end date; a one-day event ends next midnight.
+        last = (end - timedelta(seconds=1)).date() if end else start.date()
+        when = (
+            f"{day} all day"
+            if last <= start.date()
+            else f"{day} all day through {last.strftime('%m-%d')}"
+        )
+    else:
+        when = f"{day} {start.strftime('%H:%M')}"
+        if end and end > start:
+            if end.date() == start.date():
+                when += f"–{end.strftime('%H:%M')}"
+            else:
+                when += f"–{end.strftime('%a %m-%d %H:%M')}"
+    title = row["summary"] or "(untitled)"
+    label = f" [{row['calendar_summary']}]" if row.get("calendar_summary") else ""
+    return f"- {when} {title}{label}"
 
 
 def _commitment_line(row: dict[str, Any], tz: ZoneInfo, now: datetime) -> str:
@@ -259,6 +288,14 @@ async def assemble_context(
             conn, start=day_start, end=day_start + timedelta(days=1),
             limit=TODAY_EVENTS_LIMIT,
         )
+        calendar_states = await calendar_q.enabled_states(conn)
+        calendar_rows = (
+            await calendar_q.upcoming(
+                conn, start=now - timedelta(hours=1),
+                end=now + CALENDAR_HORIZON, limit=CALENDAR_LIMIT,
+            )
+            if calendar_states else []
+        )
         health_today = await health_q.today_summary(
             conn, user_id=user_id, start=day_start
         )
@@ -349,6 +386,22 @@ async def assemble_context(
     else:
         commitments_body = "(none)"
     sections.append(("commitments", "## Commitments (due / upcoming)", commitments_body))
+
+    # §12: the read-only calendar mirror. Present whenever a feed is
+    # configured — an empty week is information too — and absent otherwise,
+    # so the model never wonders whether it has a calendar.
+    if calendar_states:
+        if calendar_rows:
+            lines = [_calendar_line(r, tz) for r in calendar_rows]
+            calendar_body = _clip_lines(
+                lines, BUDGETS["calendar"], "[later events not shown]",
+                drop_head=False,
+            )
+        else:
+            calendar_body = "(none in the next 7 days)"
+        sections.append((
+            "calendar", "## Calendar (next 7 days, read-only)", calendar_body,
+        ))
 
     # Pending wakeups: without this the model re-schedules follow-ups blind —
     # seen live: 4 duplicate "check the block landed" wakeups in one evening,

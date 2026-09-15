@@ -145,10 +145,13 @@ async def seeded(migrated: str, dsn: str):
             """
             INSERT INTO calendar_events_cache
               (user_id, provider_event_id, calendar_id, starts_at, ends_at,
-               summary, raw)
-            VALUES (%s, 'evt-abc', 'primary', %s, %s, 'Dentist', '{}')
+               summary, raw, status)
+            VALUES
+              (%s, 'evt-abc', 'primary', %s, %s, 'Dentist', '{}', 'confirmed'),
+              (%s, 'evt-gone', 'primary', %s, %s, 'Cancelled lunch', '{}', 'cancelled')
             """,
-            (USER_A, now + timedelta(hours=2), now + timedelta(hours=3)),
+            (USER_A, now + timedelta(hours=2), now + timedelta(hours=3),
+             USER_A, now + timedelta(hours=5), now + timedelta(hours=6)),
         )
 
         original_meal_id = conn.execute(
@@ -295,7 +298,9 @@ async def test_agenda_merges_typed_items_in_time_order(client, seeded):
     assert set(items[1]) == {"id", "kind", "title", "body", "due", "overdue"}
     assert items[1]["overdue"] is False
     assert items[2]["id"] == "g:evt-abc"
-    assert set(items[2]) == {"id", "kind", "title", "starts", "ends"}
+    assert set(items[2]) == {"id", "kind", "title", "starts", "ends", "all_day"}
+    assert items[2]["all_day"] is False
+    assert not any(i["id"] == "g:evt-gone" for i in items), "tombstones stay hidden"
     live = items[:3]
     assert [item.get("due", item.get("starts")) for item in live] == sorted(
         item.get("due", item.get("starts")) for item in live

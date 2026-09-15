@@ -32,7 +32,6 @@ from inkling.turns.commands import (
     CancelWakeup,
     Command,
     CompleteCommitment,
-    CreateCalendarEvent,
     LogMeal,
     LogWeight,
     LogWorkout,
@@ -447,38 +446,6 @@ async def _apply_cancel_wakeup(
     return {"wakeup_id": cmd.id}
 
 
-async def _apply_create_calendar_event(
-    conn: AsyncConnection,
-    cmd: CreateCalendarEvent,
-    *,
-    user_id: str,
-    turn_id: int,
-    index: int,
-) -> dict[str, Any]:
-    """§12 write path: a deliveries row on the 'calendar' channel.
-
-    External side effects happen only via outbox drainers after commit (§5.4),
-    and the calendar insert is exactly such an effect — same idempotency-key
-    shape as Notify, so a replayed turn can't double-book.
-    """
-    key = f"turn:{turn_id}:calendar:{index}"
-    row = await deliveries_q.enqueue(
-        conn,
-        user_id=user_id,
-        channel="calendar",
-        destination=cmd.calendar_id,
-        body=json.dumps({
-            "summary": cmd.summary,
-            "starts_at": cmd.starts_at.isoformat(),
-            "ends_at": cmd.ends_at.isoformat(),
-            "description": cmd.description,
-        }),
-        idempotency_key=key,
-        turn_id=turn_id,
-    )
-    return {"delivery_id": int(row["id"]) if row else None, "duplicate": row is None}
-
-
 async def _apply_notify(
     conn: AsyncConnection,
     cmd: Notify,
@@ -557,10 +524,6 @@ async def apply_command(
         return await _apply_schedule_wakeup(conn, cmd, user_id=user_id, turn_id=turn_id)
     if isinstance(cmd, CancelWakeup):
         return await _apply_cancel_wakeup(conn, cmd, user_id=user_id, turn_id=turn_id)
-    if isinstance(cmd, CreateCalendarEvent):
-        return await _apply_create_calendar_event(
-            conn, cmd, user_id=user_id, turn_id=turn_id, index=index
-        )
     if isinstance(cmd, UpdateDoc):
         return await _apply_update_doc(conn, cmd, user_id=user_id, turn_id=turn_id)
     if isinstance(cmd, UpsertMemoryFact):
@@ -573,6 +536,5 @@ async def apply_command(
             turn_id=turn_id,
             index=index,
         )
-    # CreateCalendarEvent is rejected in validate.py until §12 lands; anything
-    # else is a §9.1 command someone added without wiring application.
+    # Anything else is a §9.1 command someone added without wiring application.
     raise NotImplementedError(f"no application for command {cmd.type}")

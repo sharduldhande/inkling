@@ -97,6 +97,7 @@ def test_schema_has_no_forbidden_commands():
 
     rendered = str(schema)
     assert "DeleteCalendarEvent" not in rendered  # §9.1: deliberately absent
+    assert "CreateCalendarEvent" not in rendered  # §12: the calendar is read-only
     assert "emit" not in schema["properties"]["commands"]["items"].get("title", "")
     assert schema["required"] == ["commands"]
 

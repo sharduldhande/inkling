@@ -63,25 +63,10 @@ UPDATE triggers SET status = 'running'
 WHERE id = (
   SELECT id FROM triggers
   WHERE user_id = %(user_id)s AND status = 'pending'
-    AND NOT (source = 'calendar' AND payload->>'kind' = 'hint')
   ORDER BY priority, received_at
   FOR UPDATE SKIP LOCKED LIMIT 1)
   AND NOT EXISTS (
     SELECT 1 FROM turns WHERE user_id = %(user_id)s AND status = 'running')
-RETURNING *
-"""
-
-# §12: webhook hints are sync work, not turns — the calendar engine claims
-# them (excluded from the worker's _CLAIM above); everything else about the
-# trigger machinery (coalescing, idempotency, audit trail) is shared.
-_CLAIM_HINT = """
-UPDATE triggers SET status = 'running'
-WHERE id = (
-  SELECT id FROM triggers
-  WHERE status = 'pending'
-    AND source = 'calendar' AND payload->>'kind' = 'hint'
-  ORDER BY received_at
-  FOR UPDATE SKIP LOCKED LIMIT 1)
 RETURNING *
 """
 
@@ -135,12 +120,6 @@ async def claim_next(conn: AsyncConnection, user_id: str) -> dict[str, Any] | No
     None means either an empty inbox or a turn already in flight for this user.
     """
     cur = await conn.execute(_CLAIM, {"user_id": user_id})
-    return await cur.fetchone()
-
-
-async def claim_calendar_hint(conn: AsyncConnection) -> dict[str, Any] | None:
-    """Claim the oldest pending webhook hint (tenant-scoped by RLS)."""
-    cur = await conn.execute(_CLAIM_HINT)
     return await cur.fetchone()
 
 

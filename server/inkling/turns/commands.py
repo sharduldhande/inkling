@@ -1,7 +1,8 @@
 """Model command schema (§9.1) — the ONLY way the model changes anything (D4).
 
 The model proposes commands; the §9.2 validation layer accepts or rejects them;
-nothing here touches the database. There is deliberately NO DeleteCalendarEvent,
+nothing here touches the database. There is deliberately NO calendar command of
+any kind (the calendar is read-only: no create, update, or delete exists anywhere),
 NO doc command targeting `goals`, NO raw SQL, NO file access.
 
 Commands arrive as the JSON input of the `emit_commands` tool call (§7) and are
@@ -184,15 +185,6 @@ class CancelWakeup(_CommandBase):
     id: int
 
 
-class CreateCalendarEvent(_CommandBase):
-    type: Literal["CreateCalendarEvent"]
-    calendar_id: str
-    summary: str
-    starts_at: datetime
-    ends_at: datetime
-    description: str | None = None
-
-
 class Notify(_CommandBase):  # rare: extra push beyond the reply
     type: Literal["Notify"]
     body: str
@@ -237,7 +229,6 @@ Command = Annotated[
     | UpdateWorkingState
     | ScheduleWakeup
     | CancelWakeup
-    | CreateCalendarEvent
     | Notify
     | UpdateDoc
     | UpsertMemoryFact,

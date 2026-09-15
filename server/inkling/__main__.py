@@ -3,7 +3,7 @@
 Roles api/worker/scheduler/delivery/calendar/jobs must each be independently
 runnable (§1); `all` runs everything in one asyncio process. All roles are
 wired; calendar and the backup/drill jobs no-op cleanly until their §19
-credentials (Google OAuth, S3 bucket) are configured.
+configuration (calendar feed files, S3 bucket) exists.
 """
 
 import argparse
@@ -85,9 +85,10 @@ async def _serve(config: Config, role: str) -> int:
       no in-process invalidation event reaches a separate process).
     - delivery: outbox drainer only (§11); its 60 s reconcile plays the same
       role as the scheduler's.
-    - calendar: sync engine only (§12); requires Google OAuth config, else
-      exits with an explanation. In `all` it simply isn't started when
-      unconfigured — the feature is absent, not broken.
+    - calendar: read-only feed sync only (§12); requires at least one
+      ~/.inkling/calendars-<user>.json, else exits with an explanation. In
+      `all` it simply isn't started when no user has feeds — the feature is
+      absent, not broken.
     - all: everything in one asyncio process — the initial systemd shape;
       scheduler/drainer nudge workers and workers poke them back in-process.
     """
@@ -117,7 +118,7 @@ async def _serve(config: Config, role: str) -> int:
     apns = None
     calendar_sync = None
     calendar_task = None
-    google = None
+    ics_provider = None
     jobs_runner = None
     jobs_task = None
     try:
@@ -142,39 +143,50 @@ async def _serve(config: Config, role: str) -> int:
             scheduler_task = asyncio.create_task(
                 scheduler.run_forever(), name="scheduler"
             )
-        if role in ("calendar", "all") and config.google_oauth_client_id:
-            from inkling.calendar_.google import GoogleCalendar
-            from inkling.calendar_.sync import CalendarSync
-            from inkling.db.queries import calendar as calendar_q
+        if role in ("calendar", "all"):
+            from inkling.calendar_.config import (
+                FeedConfigError, feed_file, load_feeds,
+            )
 
-            # Per-user token files live in calendar_sync_state (§16); a user
-            # with no rows simply contributes nothing to the map.
-            token_file_for: dict[str, str] = {}
+            # Feed lists are per-user secret files (§16); a user without one
+            # simply has no calendar. A malformed file disables that user's
+            # calendar loudly rather than the whole process.
+            feeds_for = {}
             for user_id in roster.user_ids:
-                async with db.with_tenant(user_id) as conn:
-                    for state in await calendar_q.states(conn):
-                        token_file_for[user_id] = state["oauth_token_file"]
-            google = GoogleCalendar(
-                client_id=config.google_oauth_client_id,
-                client_secret=config.google_oauth_client_secret,
-                token_file_for=token_file_for,
-            )
-            calendar_sync = CalendarSync(
-                db,
-                roster.user_ids,
-                google,
-                webhook_url=config.calendar_webhook_url,
-                nudge=supervisor.nudge if supervisor else None,
-            )
-            calendar_task = asyncio.create_task(
-                calendar_sync.run_forever(), name="calendar"
-            )
-        elif role == "calendar":
-            print(
-                "calendar role needs GOOGLE_OAUTH_CLIENT_ID/SECRET configured",
-                file=sys.stderr,
-            )
-            return 1
+                path = feed_file(config.calendar_config_dir, user_id)
+                if not path.exists():
+                    continue
+                try:
+                    feeds = load_feeds(path)
+                except (FeedConfigError, OSError) as exc:
+                    log.error("calendar feeds for %s unusable (%s): %s", user_id, path, exc)
+                    continue
+                if feeds:
+                    feeds_for[user_id] = feeds
+            if feeds_for:
+                from inkling.calendar_.ics import IcsProvider
+                from inkling.calendar_.sync import CalendarSync
+
+                ics_provider = IcsProvider({
+                    user_id: {f.id: f.url for f in feeds}
+                    for user_id, feeds in feeds_for.items()
+                })
+                calendar_sync = CalendarSync(
+                    db,
+                    ics_provider,
+                    feeds_for,
+                    nudge=supervisor.nudge if supervisor else None,
+                )
+                calendar_task = asyncio.create_task(
+                    calendar_sync.run_forever(), name="calendar"
+                )
+            elif role == "calendar":
+                print(
+                    "calendar role needs at least one calendars-<user>.json in "
+                    f"{config.calendar_config_dir}",
+                    file=sys.stderr,
+                )
+                return 1
 
         if role in ("delivery", "all"):
             ntfy = NtfyClient(config.ntfy_base)
@@ -194,10 +206,6 @@ async def _serve(config: Config, role: str) -> int:
                 log.warning(
                     "APNS_KEY_FILE unset: user pushes will dead-letter"
                 )
-            if google is not None:
-                from inkling.calendar_.channel import CalendarChannel
-
-                extra["calendar"] = CalendarChannel(db, google)
             drainer = Drainer(
                 db,
                 roster.user_ids,
@@ -304,7 +312,7 @@ async def _serve(config: Config, role: str) -> int:
 
         app = create_app(
             db, roster, broker=broker, supervisor=supervisor,
-            calendar_sync=calendar_sync, uploads_dir=config.export_git_dir,
+            uploads_dir=config.export_git_dir,
         )
         server = uvicorn.Server(
             uvicorn.Config(
@@ -332,8 +340,8 @@ async def _serve(config: Config, role: str) -> int:
             await ntfy.close()
         if apns is not None:
             await apns.close()
-        if google is not None:
-            await google.close()
+        if ics_provider is not None:
+            await ics_provider.close()
         await db.close()
 
 

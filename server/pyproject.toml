@@ -20,6 +20,8 @@ dependencies = [
     "python-multipart>=0.0.9",
     "zxing-cpp>=2.2",
     "pillow>=10",
+    "icalendar>=7.3.0",
+    "recurring-ical-events>=3.8.2",
 ]
 
 [dependency-groups]
