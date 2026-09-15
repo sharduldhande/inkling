@@ -132,7 +132,7 @@ Model every handler on `routes_history.py`: resolve the user via
 `request.app.state.roster.user_for_header(authorization)`, bare-401 on
 failure, one `async with request.app.state.db.with_tenant(user_id)` block,
 `JSONResponse` out. Wire into `server.py` with an import and
-`app.include_router(routes_panes.router)` after the calendar router. No
+`app.include_router(routes_panes.router)` after the chat router. No
 query parameters on any of the three endpoints — all windows are fixed
 server-side constants.
 
@@ -144,7 +144,7 @@ Response:
 {"items":[
   {"id":"c:12","kind":"commitment","title":"Pay electricity bill","body":null,"due":1752829200000,"overdue":true},
   {"id":"o:98","kind":"recurring","title":"Evening review","body":null,"due":1752861600000,"overdue":false},
-  {"id":"g:evt-abc","kind":"calendar","title":"Dentist","starts":1752858000000,"ends":1752861600000},
+  {"id":"g:evt-abc","kind":"calendar","title":"Dentist","starts":1752858000000,"ends":1752861600000,"all_day":false},
   {"id":"c:11","kind":"commitment","title":"Book dentist","body":null,"due":1752822000000,"done":true,"done_ts":1752825600000}
 ]}
 ```
@@ -162,10 +162,12 @@ appended after them, newest completion first. Four sources:
    c.recurrence IS NOT NULL`), `o.status IN ('pending','eligible')`,
    `o.fire_at <= now() + interval '48 hours'`. `due` = fire_at, id
    `'o:' || o.id`, kind `recurring`.
-3. Calendar cache: `starts_at IS NOT NULL AND coalesce(ends_at, starts_at)
-   >= now() AND starts_at <= now() + interval '48 hours'`; title =
+3. Calendar cache (read-only ICS mirror): `status <> 'cancelled' AND
+   starts_at IS NOT NULL AND coalesce(ends_at, starts_at) >= now() AND
+   starts_at <= now() + interval '48 hours'`, feed enabled; title =
    `coalesce(summary, '(untitled)')`, id `'g:' || provider_event_id`, kind
-   `calendar`; `ends` null when NULL.
+   `calendar`; `ends` null when NULL; `all_day` true for date-only events
+   (`starts` is then local midnight in the user's timezone).
 4. Recently completed commitments: `status='done' AND updated_at >= now() -
    interval '24 hours'`, ordered `updated_at DESC`, limit 50. Shape:
    `{"id","kind":"commitment","title","body","due","done":true,"done_ts"}`
@@ -442,7 +444,7 @@ whole response; dispatch UI updates to the MainActor as chunks arrive.
 → 200 {"items":[
   {"id":"c:12","kind":"commitment","title":"Pay electricity bill","body":null,"due":1752829200000,"overdue":true},
   {"id":"o:98","kind":"recurring","title":"Evening review","body":null,"due":1752861600000,"overdue":false},
-  {"id":"g:evt-abc","kind":"calendar","title":"Dentist","starts":1752858000000,"ends":1752861600000},
+  {"id":"g:evt-abc","kind":"calendar","title":"Dentist","starts":1752858000000,"ends":1752861600000,"all_day":false},
   {"id":"c:11","kind":"commitment","title":"Book dentist","body":null,"due":1752822000000,"done":true,"done_ts":1752825600000}
 ]}
 ```
@@ -453,7 +455,8 @@ whole response; dispatch UI updates to the MainActor as chunks arrive.
   newest completion first, max 50.
 - Window: everything overdue plus 48 hours ahead; done items by completion
   time, not due. Fixed server-side; the app sends no query parameters.
-- `body` and `ends` are nullable. `kind` is one of exactly
+- `body` and `ends` are nullable; `all_day` is present on `calendar` rows
+  only (decode as `Bool?`). `kind` is one of exactly
   `commitment | recurring | calendar` — but decode as `String` and render
   unknown kinds like `commitment` (same forward-compatibility rule as
   `role`).
@@ -533,7 +536,7 @@ schedule a history sync a few seconds out and let §B8.6 do the rest.
 `GET /turns/{id}/events` (stream replay) — the live SSE stream never emits
 `id:` fields, so the client never learns a turn id or sequence number and
 cannot use replay. Recovery from dropped streams goes through history sync
-(§B8.5) instead. `POST /calendar/webhook/google` is Google's, not yours.
+(§B8.5) instead.
 
 ## B4. Navigation shell
 
@@ -588,6 +591,8 @@ Data: `GET /agenda`, held in `AgendaStore`.
     `Date.FormatStyle().weekday(.abbreviated).hour().minute()` ("Sat 9:00 AM").
   - `calendar` rows with a non-null `ends` on the same day append the end
     time: "in 3 hours until 6:00 PM" / "Sat 5:00–6:00 PM".
+  - `calendar` rows with `all_day == true` show no clock time: "All day",
+    "Tomorrow, all day", or "Sat, all day".
   - Done: `"Done " + RelativeDateTimeFormatter` output on `done_ts`
     ("Done 2 hours ago"); bare "Done" if `done_ts` is somehow absent.
     Caption in `.secondary`.

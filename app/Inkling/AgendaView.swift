@@ -128,6 +128,14 @@ struct AgendaView: View {
             return "Overdue — was due \(relativeText)"
         }
 
+        if item.kind == "calendar", item.isAllDay {
+            // The server sends local midnight for all-day rows; a clock time
+            // would be noise. "All day" today, "Sat, all day" beyond today.
+            if Calendar.current.isDateInToday(item.eventDate) { return "All day" }
+            if Calendar.current.isDateInTomorrow(item.eventDate) { return "Tomorrow, all day" }
+            return item.eventDate.formatted(Date.FormatStyle().weekday(.abbreviated)) + ", all day"
+        }
+
         let within24Hours = item.eventDate.timeIntervalSinceNow <= 24 * 60 * 60
         var text = within24Hours
             ? relativeText
