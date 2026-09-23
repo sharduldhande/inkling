@@ -35,6 +35,7 @@ from inkling.turns.commands import (
     CompleteCommitment,
     LogMeal,
     MarkCalendarDone,
+    SetFocus,
     LogWeight,
     LogWorkout,
     Notify,
@@ -501,6 +502,19 @@ async def _apply_mark_calendar(
     return {"provider_event_id": row["provider_event_id"], "done": cmd.done}
 
 
+async def _apply_set_focus(
+    conn: AsyncConnection, cmd: SetFocus, *, user_id: str, turn_id: int
+) -> dict[str, Any]:
+    row = await docs_q.insert_next_version(
+        conn,
+        user_id=user_id,
+        kind="focus",
+        content=" ".join(cmd.text.split()),
+        written_by=_authorship(turn_id),
+    )
+    return {"doc_id": int(row["id"]), "kind": "focus", "version": int(row["version"])}
+
+
 async def apply_command(
     conn: AsyncConnection,
     cmd: Command,
@@ -541,6 +555,8 @@ async def apply_command(
         return await _apply_complete_commitment(
             conn, cmd, user_id=user_id, turn_id=turn_id
         )
+    if isinstance(cmd, SetFocus):
+        return await _apply_set_focus(conn, cmd, user_id=user_id, turn_id=turn_id)
     if isinstance(cmd, MarkCalendarDone):
         return await _apply_mark_calendar(conn, cmd, user_id=user_id, turn_id=turn_id)
     if isinstance(cmd, SnoozeCommitment):

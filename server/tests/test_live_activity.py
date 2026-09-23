@@ -28,7 +28,8 @@ async def clean(migrated: str, dsn: str):
     with psycopg.connect(dsn) as conn:
         conn.execute(
             "TRUNCATE live_activity, commitment_occurrences, commitments, "
-            "calendar_events_cache RESTART IDENTITY CASCADE"
+            "calendar_events_cache, docs, turn_events, turns, triggers, "
+            "transcript, audit_log, events RESTART IDENTITY CASCADE"
         )
         conn.commit()
     yield
@@ -290,3 +291,90 @@ async def test_empty_report_right_after_start_is_ignored(db):
     async with db.with_tenant(USER_A) as conn:
         assert not await la_q.clear_activity(conn, USER_A)
     assert (await _row(db))["started_at"] is not None
+
+
+# --- now / next ------------------------------------------------------------------
+
+async def _class(db, summary, starts_in, minutes=75, *, location="Klaus 1447"):
+    async with db.with_tenant(USER_A) as conn:
+        await conn.execute(
+            "INSERT INTO calendar_events_cache (user_id, provider_event_id, "
+            "calendar_id, raw, summary, starts_at, ends_at) "
+            "VALUES (%s, %s, 'icloud-gt', %s::jsonb, %s, now() + %s, now() + %s)",
+            (USER_A, f"cls-{summary}", f'{{"location": "{location}"}}', summary,
+             starts_in, starts_in + timedelta(minutes=minutes)),
+        )
+
+
+async def _focus(db, text, *, days_ago=0):
+    async with db.with_tenant(USER_A) as conn:
+        await conn.execute(
+            "INSERT INTO docs (user_id, kind, version, content, written_by, created_at) "
+            "VALUES (%s, 'focus', (SELECT coalesce(max(version), 0) + 1 FROM docs "
+            "WHERE user_id = %s AND kind = 'focus'), %s, 'test', now() - %s)",
+            (USER_A, USER_A, text, timedelta(days=days_ago)),
+        )
+
+
+async def _now_next(db):
+    from inkling.delivery.live_activity import now_next
+
+    async with db.with_tenant(USER_A) as conn:
+        return await now_next(conn, USER_A)
+
+
+async def test_now_is_the_class_in_progress_and_next_the_following_one(db):
+    await _class(db, "Machine Learning Theory", timedelta(minutes=-20))
+    await _class(db, "Data Science for Epidemiology", timedelta(minutes=70),
+                 location="East Architecture 309")
+    await _event(db, "HW2 - Programming", timedelta(hours=5))
+    card = await _now_next(db)
+    assert (card["nowKind"], card["nowTitle"], card["nowDetail"]) == (
+        "event", "Machine Learning Theory", "Klaus 1447",
+    )
+    assert abs(card["nowUntil"] - (datetime.now(timezone.utc).timestamp() + 55 * 60)) < 60
+    assert (card["nextKind"], card["nextTitle"], card["nextDetail"]) == (
+        "event", "Data Science for Epidemiology", "East Architecture 309",
+    )
+    assert card["title"] == "HW2 - Programming", "legacy fields = the deadline"
+
+
+async def test_between_classes_now_is_todays_focus(db):
+    await _focus(db, "Stale focus", days_ago=2)
+    await _focus(db, "Record the BCG video")
+    await _event(db, "HW2 - Programming", timedelta(hours=5))
+    card = await _now_next(db)
+    assert (card["nowKind"], card["nowTitle"]) == ("focus", "Record the BCG video")
+    assert (card["nextKind"], card["nextTitle"]) == ("deadline", "HW2 - Programming")
+
+
+async def test_no_focus_falls_back_to_the_most_urgent_deadline(db):
+    await _focus(db, "Yesterday's focus", days_ago=1)
+    await _commit(db, "overdue essay", timedelta(hours=-3))
+    await _event(db, "HW2 - Programming", timedelta(hours=5))
+    card = await _now_next(db)
+    assert (card["nowKind"], card["nowTitle"], card["nowOverdue"]) == (
+        "deadline", "overdue essay", True,
+    )
+    assert (card["nextKind"], card["nextTitle"]) == ("deadline", "HW2 - Programming")
+
+
+async def test_all_clear(db):
+    card = await _now_next(db)
+    assert card["nowKind"] == "clear" and card["nextKind"] is None
+
+
+async def test_set_focus_command_validates_and_lands_in_docs(db):
+    from tests.test_commands import _run_turn, _validate
+
+    verdict = await _validate(db, USER_A, [
+        {"type": "SetFocus", "text": "x" * 61, "reason": "r"},
+        {"type": "SetFocus", "text": "Draft PA3 writeup", "reason": ""},
+    ])
+    assert "under 60" in verdict.rejected[0].reason
+    assert "reason is required" in verdict.rejected[1].reason
+    await _run_turn(db, USER_A, [
+        {"type": "SetFocus", "text": "  Draft   PA3 writeup ", "reason": "due Mon"},
+    ])
+    card = await _now_next(db)
+    assert (card["nowKind"], card["nowTitle"]) == ("focus", "Draft PA3 writeup")

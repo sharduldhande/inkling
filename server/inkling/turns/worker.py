@@ -34,6 +34,7 @@ from inkling.turns.commands import (
     CompleteCommitment,
     MarkCalendarDone,
     Notify,
+    SetFocus,
     ScheduleWakeup,
     SnoozeCommitment,
     UpsertCommitment,
@@ -57,7 +58,7 @@ SCHEDULE_CHANGING = (UpsertCommitment, SnoozeCommitment, ScheduleWakeup, CancelW
 # occurrence.
 AGENDA_CHANGING = (
     UpsertCommitment, SnoozeCommitment, CompleteCommitment, AppendEvent,
-    MarkCalendarDone,
+    MarkCalendarDone, SetFocus,
 )
 
 LEASE_SECONDS = 90

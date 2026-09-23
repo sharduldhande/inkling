@@ -44,6 +44,7 @@ from inkling.turns.commands import (
     Command,
     CompleteCommitment,
     MarkCalendarDone,
+    SetFocus,
     LogMeal,
     LogWeight,
     LogWorkout,
@@ -410,6 +411,23 @@ async def _validate_mark_calendar(
     return reason
 
 
+FOCUS_MAX_CHARS = 60
+
+
+def _validate_set_focus(cmd: SetFocus) -> str | None:
+    text = " ".join(cmd.text.split())
+    if not text:
+        return "focus text is required"
+    if len(text) > FOCUS_MAX_CHARS:
+        return (
+            f"focus is {len(text)} characters; it's a lock-screen line — "
+            f"keep it under {FOCUS_MAX_CHARS} (e.g. 'Record the BCG video')"
+        )
+    if not cmd.reason.strip():
+        return "reason is required"
+    return None
+
+
 async def _validate_snooze(conn: AsyncConnection, cmd: SnoozeCommitment) -> str | None:
     _, reason = await _load_open_commitment(conn, cmd.id, cmd.expected_version)
     return reason
@@ -596,6 +614,8 @@ async def validate_commands(
             reason = await _validate_snooze(conn, cmd)
         elif isinstance(cmd, MarkCalendarDone):
             reason = await _validate_mark_calendar(conn, cmd)
+        elif isinstance(cmd, SetFocus):
+            reason = _validate_set_focus(cmd)
         elif isinstance(cmd, UpdateWorkingState):
             reason = await _validate_update_working_state(conn, cmd)
             if reason is None and not has_notify and _PUSH_CLAIM.search(cmd.new_content):

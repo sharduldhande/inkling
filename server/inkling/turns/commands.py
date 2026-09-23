@@ -196,6 +196,15 @@ class MarkCalendarDone(_CommandBase):
     done: bool = True
 
 
+class SetFocus(_CommandBase):
+    """The one thing to chip away at when no class or meeting is on. Shown
+    as NOW on the lock-screen card; valid for the local day it was set."""
+
+    type: Literal["SetFocus"]
+    text: str
+    reason: str
+
+
 class Notify(_CommandBase):  # rare: extra push beyond the reply
     type: Literal["Notify"]
     body: str
@@ -237,6 +246,7 @@ Command = Annotated[
     | UpsertCommitment
     | CompleteCommitment
     | MarkCalendarDone
+    | SetFocus
     | SnoozeCommitment
     | UpdateWorkingState
     | ScheduleWakeup

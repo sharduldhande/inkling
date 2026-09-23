@@ -53,6 +53,7 @@ BUDGETS = {
     "digest7": 500,
     "working_state": WORKING_STATE_TOKEN_CAP,  # 1200 hard cap, marker on excess
     "daily_plan": 400,
+    "focus": 30,
     "commitments": 400,  # never silently truncated; bounded by row limit below
     "calendar": 400,
     "wakeups": 250,
@@ -279,7 +280,8 @@ async def assemble_context(
         day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
 
         docs = await docs_q.current_many(
-            conn, ["goals", "patterns", "digest7", "working_state", "daily_plan"]
+            conn,
+            ["goals", "patterns", "digest7", "working_state", "daily_plan", "focus"],
         )
         facts = await facts_q.active(conn, FACTS_LIMIT)
         upcoming = await commitments_q.upcoming(
@@ -377,6 +379,18 @@ async def assemble_context(
         sections.append(("working_state", "## Working state", "(none yet)"))
 
     doc_section("daily_plan", "daily_plan", "## Today's plan")
+
+    # What the lock-screen card shows as NOW between classes (SetFocus). A
+    # focus from an earlier day has lapsed; the card falls back to the most
+    # urgent deadline, and the model should know that.
+    focus = docs.get("focus")
+    if focus and focus["created_at"].astimezone(tz).date() == local_now.date():
+        focus_body = (
+            f"{focus['content']} (set {focus['created_at'].astimezone(tz):%H:%M})"
+        )
+    else:
+        focus_body = "(none today; the card falls back to the most urgent deadline)"
+    sections.append(("focus", "## Lock-screen focus", focus_body))
 
     # §8.1 section 7: ALWAYS present, bounded explicitly rather than clipped.
     if upcoming:
