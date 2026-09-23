@@ -59,19 +59,28 @@ struct NowNextCard: View {
                     .lineLimit(2)
                 nowLine
             }
-            if let title = state.nextTitle, let at = state.nextDate {
+            if let title = state.nextTitle {
                 Divider()
                 HStack(spacing: 6) {
                     Text("NEXT")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
+                    if state.nextKind == "focus" {
+                        Image(systemName: "scope")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Text(title)
                         .font(.subheadline)
                         .lineLimit(1)
                     Spacer(minLength: 4)
-                    Text(nextWhen(at))
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    // A focus has no time; events show their start, deadlines "due …".
+                    if let at = state.nextDate {
+                        Text(nextWhen(at))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                    }
                 }
             }
         }

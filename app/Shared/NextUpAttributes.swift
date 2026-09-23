@@ -26,7 +26,7 @@ struct NextUpAttributes: ActivityAttributes {
         var nowUntil: Double?
         var nowDue: Double?
         var nowOverdue: Bool?
-        /// "event" | "deadline" | nil
+        /// "event" | "focus" | "deadline" | nil
         var nextKind: String?
         var nextTitle: String?
         var nextAt: Double?
