@@ -323,40 +323,58 @@ async def _now_next(db):
         return await now_next(conn, USER_A)
 
 
-async def test_now_is_the_class_in_progress_and_next_the_following_one(db):
-    await _class(db, "Machine Learning Theory", timedelta(minutes=-20))
-    await _class(db, "Data Science for Epidemiology", timedelta(minutes=70),
-                 location="East Architecture 309")
-    await _event(db, "HW2 - Programming", timedelta(hours=5))
+async def test_in_class_next_is_the_focus_not_tomorrows_lecture(db):
+    await _class(db, "Natural Language", timedelta(minutes=-40))
+    await _class(db, "Digital Health", timedelta(hours=20), location="Tech Sq 118")
+    await _focus(db, "Record the BCG video")
+    await _event(db, "HW2 - Programming", timedelta(days=2))
     card = await _now_next(db)
     assert (card["nowKind"], card["nowTitle"], card["nowDetail"]) == (
-        "event", "Machine Learning Theory", "Klaus 1447",
+        "event", "Natural Language", "Klaus 1447",
     )
-    assert abs(card["nowUntil"] - (datetime.now(timezone.utc).timestamp() + 55 * 60)) < 60
+    assert abs(card["nowUntil"] - (datetime.now(timezone.utc).timestamp() + 35 * 60)) < 60
+    assert (card["nextKind"], card["nextTitle"], card["nextAt"]) == (
+        "focus", "Record the BCG video", None,
+    )
+
+
+async def test_back_to_back_class_is_next(db):
+    await _class(db, "Machine Learning Theory", timedelta(minutes=-60))
+    await _class(db, "Data Science for Epidemiology", timedelta(minutes=30),
+                 location="East Architecture 309")
+    await _focus(db, "Record the BCG video")
+    card = await _now_next(db)
     assert (card["nextKind"], card["nextTitle"], card["nextDetail"]) == (
         "event", "Data Science for Epidemiology", "East Architecture 309",
     )
-    assert card["title"] == "HW2 - Programming", "legacy fields = the deadline"
 
 
-async def test_between_classes_now_is_todays_focus(db):
+async def test_between_classes_now_is_focus_and_next_a_class_only_if_soon(db):
     await _focus(db, "Stale focus", days_ago=2)
     await _focus(db, "Record the BCG video")
-    await _event(db, "HW2 - Programming", timedelta(hours=5))
+    await _event(db, "HW2 - Programming", timedelta(days=2))
+    await _class(db, "Evening seminar", timedelta(hours=5))  # too far out
     card = await _now_next(db)
     assert (card["nowKind"], card["nowTitle"]) == ("focus", "Record the BCG video")
     assert (card["nextKind"], card["nextTitle"]) == ("deadline", "HW2 - Programming")
 
 
-async def test_no_focus_falls_back_to_the_most_urgent_deadline(db):
+async def test_upcoming_deadlines_outrank_old_overdue_chores(db):
     await _focus(db, "Yesterday's focus", days_ago=1)
-    await _commit(db, "overdue essay", timedelta(hours=-3))
-    await _event(db, "HW2 - Programming", timedelta(hours=5))
+    await _commit(db, "Buy a dress shirt", timedelta(days=-4))
+    await _commit(db, "BCG video", timedelta(hours=3))
+    await _event(db, "HW2 - Programming", timedelta(days=2))
     card = await _now_next(db)
     assert (card["nowKind"], card["nowTitle"], card["nowOverdue"]) == (
-        "deadline", "overdue essay", True,
+        "deadline", "BCG video", False,
     )
     assert (card["nextKind"], card["nextTitle"]) == ("deadline", "HW2 - Programming")
+
+
+async def test_only_overdue_left_still_shows(db):
+    await _commit(db, "Buy a dress shirt", timedelta(days=-4))
+    card = await _now_next(db)
+    assert (card["nowTitle"], card["nowOverdue"]) == ("Buy a dress shirt", True)
 
 
 async def test_all_clear(db):

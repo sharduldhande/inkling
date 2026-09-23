@@ -42,6 +42,10 @@ POLL_SECONDS = 60
 RESTART_AFTER = timedelta(hours=7, minutes=45)  # iOS ends activities at 8h
 ORPHAN_AFTER = timedelta(minutes=10)
 MORE_WINDOW = timedelta(days=7)
+# NEXT shows an event only when it's genuinely next: back-to-back after the
+# current class (<= 30 min gap), or, when free, starting within 3 hours today.
+BACK_TO_BACK_GAP = timedelta(minutes=30)
+NEXT_EVENT_WINDOW = timedelta(hours=3)
 # Calendar feeds whose items are deadlines, not meetings (feed ids from
 # calendars-<user>.json). Within them, a deadline is an all-day item (Canvas
 # exports 11:59 PM due dates that way; due = end of that day) or a timed
@@ -151,61 +155,87 @@ def _deadline_card(rows: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
 async def now_next(conn, user_id: str, *, now: datetime | None = None) -> dict[str, Any]:
     """The full content-state: NOW / NEXT, plus the legacy deadline fields.
 
-    The legacy keys (title/due/overdue/kind/more = the most urgent deadline)
-    stay so an older app build keeps decoding; the now*/next* keys are the
-    Now / Next card. Keys match Swift `NextUpAttributes.ContentState`.
+    NOW is what to do this minute: the class/meeting in progress, else the
+    model's focus for today, else the most pressing deadline. NEXT is what to
+    do after it: an event only if it's genuinely next (back-to-back after the
+    current one, or later today within NEXT_EVENT_WINDOW when free), else the
+    focus / deadline to work on. Tomorrow's lecture is never NEXT (user
+    decision 2026-09-23: it serves no purpose on the lock screen).
+
+    Deadlines are ranked upcoming-first: an old overdue chore stays on the
+    Today tab and in the model's nags, but it doesn't lead the card while
+    something is still winnable.
+
+    The legacy keys (title/due/overdue/kind/more) stay so an older app build
+    keeps decoding. Keys match Swift `NextUpAttributes.ContentState`.
     """
     now = now or datetime.now(timezone.utc)
     deadlines = await _deadlines(conn, user_id, now)
     state = _deadline_card(deadlines, now)
+    ranked = [d for d in deadlines if d["due_at"] >= now] + [
+        d for d in deadlines if d["due_at"] < now
+    ]
 
     cur = await conn.execute(_EVENTS, {"user_id": user_id, "now": now})
     events = await cur.fetchall()
     current = next((e for e in events if e["starts_at"] <= now), None)
-    upcoming = next((e for e in events if e["starts_at"] > now), None)
 
     cur = await conn.execute(_TIMEZONE, (user_id,))
     tz = ZoneInfo((await cur.fetchone())["timezone"])
+    today = now.astimezone(tz).date()
     cur = await conn.execute(_FOCUS, (user_id,))
     focus = await cur.fetchone()
-    if focus and focus["created_at"].astimezone(tz).date() != now.astimezone(tz).date():
+    if focus and focus["created_at"].astimezone(tz).date() != today:
         focus = None  # lapses at the user's midnight
 
-    shown_deadline = None
+    # Work items in order: the focus, then deadlines. NOW takes the first when
+    # no event is on; NEXT takes the first one NOW didn't.
+    work: list[dict[str, Any]] = []
+    if focus is not None:
+        work.append({"kind": "focus", "title": focus["content"], "due": None})
+    work.extend(
+        {"kind": "deadline", "title": d["title"], "due": d["due_at"]} for d in ranked
+    )
+
     if current is not None:
         state.update(
             nowKind="event", nowTitle=current["title"],
             nowDetail=current["location"], nowUntil=current["ends_at"].timestamp(),
             nowDue=None, nowOverdue=False,
         )
-    elif focus is not None:
-        state.update(
-            nowKind="focus", nowTitle=focus["content"],
-            nowDetail=None, nowUntil=None, nowDue=None, nowOverdue=False,
-        )
-    elif deadlines:
-        shown_deadline = deadlines[0]
-        state.update(
-            nowKind="deadline", nowTitle=shown_deadline["title"], nowDetail=None,
-            nowUntil=None, nowDue=shown_deadline["due_at"].timestamp(),
-            nowOverdue=shown_deadline["due_at"] < now,
-        )
+        anchor, window = current["ends_at"], BACK_TO_BACK_GAP
     else:
-        state.update(
-            nowKind="clear", nowTitle="", nowDetail=None,
-            nowUntil=None, nowDue=None, nowOverdue=False,
-        )
+        item = work.pop(0) if work else None
+        if item is None:
+            state.update(nowKind="clear", nowTitle="", nowDue=None, nowOverdue=False)
+        else:
+            state.update(
+                nowKind=item["kind"], nowTitle=item["title"],
+                nowDue=item["due"].timestamp() if item["due"] else None,
+                nowOverdue=bool(item["due"] and item["due"] < now),
+            )
+        state.update(nowDetail=None, nowUntil=None)
+        anchor, window = now, NEXT_EVENT_WINDOW
 
-    following = next((d for d in deadlines if d is not shown_deadline), None)
+    upcoming = next(
+        (
+            e for e in events
+            if e["starts_at"] > now
+            and e["starts_at"] <= anchor + window
+            and e["starts_at"].astimezone(tz).date() == today
+        ),
+        None,
+    )
     if upcoming is not None:
         state.update(
             nextKind="event", nextTitle=upcoming["title"],
             nextAt=upcoming["starts_at"].timestamp(), nextDetail=upcoming["location"],
         )
-    elif following is not None:
+    elif work:
+        item = work[0]
         state.update(
-            nextKind="deadline", nextTitle=following["title"],
-            nextAt=following["due_at"].timestamp(), nextDetail=None,
+            nextKind=item["kind"], nextTitle=item["title"],
+            nextAt=item["due"].timestamp() if item["due"] else None, nextDetail=None,
         )
     else:
         state.update(nextKind=None, nextTitle=None, nextAt=None, nextDetail=None)
