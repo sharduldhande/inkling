@@ -6,8 +6,15 @@ feed ids and display names do.
 
     {"calendars": [
       {"id": "personal", "name": "Personal", "url": "https://calendar.google.com/calendar/ical/.../private-.../basic.ics"},
-      {"id": "family",   "name": "Family",   "url": "webcal://p12-caldav.icloud.com/published/2/..."}
+      {"id": "family",   "name": "Family",   "url": "webcal://p12-caldav.icloud.com/published/2/..."},
+      {"id": "canvas",   "name": "Canvas",   "url": "https://.../feed.ics",
+       "exclude": ["[OMSCS Student Center]"]}
     ]}
+
+`exclude` (optional) drops every event whose title contains one of the
+strings (case-insensitive), e.g. a Canvas course you're no longer in. An
+excluded event never enters the cache, so no turn, agenda row or Live
+Activity sees it; one already cached is retired silently on the next sync.
 """
 
 import json
@@ -23,6 +30,11 @@ class FeedSpec:
     id: str
     name: str
     url: str
+    exclude: tuple[str, ...] = ()
+
+    def excludes(self, summary: str | None) -> bool:
+        title = (summary or "").casefold()
+        return any(pattern.casefold() in title for pattern in self.exclude)
 
 
 class FeedConfigError(ValueError):
@@ -64,8 +76,18 @@ def parse_feeds(text: str) -> list[FeedSpec]:
             raise FeedConfigError(f"calendars[{i}] ({feed_id}) needs a name")
         if not isinstance(url, str) or not url.strip():
             raise FeedConfigError(f"calendars[{i}] ({feed_id}) needs a url")
+        exclude = entry.get("exclude", [])
+        if not isinstance(exclude, list) or not all(
+            isinstance(p, str) and p.strip() for p in exclude
+        ):
+            raise FeedConfigError(
+                f"calendars[{i}] ({feed_id}).exclude must be a list of non-empty strings"
+            )
         seen.add(feed_id)
-        feeds.append(FeedSpec(id=feed_id, name=name, url=_normalize_url(url)))
+        feeds.append(FeedSpec(
+            id=feed_id, name=name, url=_normalize_url(url),
+            exclude=tuple(p.strip() for p in exclude),
+        ))
     return feeds
 
 

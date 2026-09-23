@@ -209,7 +209,12 @@ class CalendarSync:
                 self._wake.clear()
 
     async def register_feeds(self) -> None:
-        """Mirror the config files into calendar_sync_state (cursors kept)."""
+        """Mirror the config files into calendar_sync_state (cursors kept).
+
+        Except on feeds with an `exclude` list: the config is only read at
+        startup, and a 304 would skip the diff, so those get one full fetch
+        for a new pattern to take effect on events already cached.
+        """
         for user_id, feeds in self.feeds_for.items():
             async with self.db.with_tenant(user_id) as conn:
                 for feed in feeds:
@@ -221,6 +226,11 @@ class CalendarSync:
                         summary=feed.name,
                         enabled=True,
                     )
+                    if feed.exclude:
+                        await calendar_q.reset_cursor(
+                            conn, user_id=user_id, provider=PROVIDER,
+                            calendar_id=feed.id,
+                        )
                 disabled = await calendar_q.disable_missing(
                     conn,
                     user_id=user_id,
@@ -261,6 +271,9 @@ class CalendarSync:
             states = await calendar_q.enabled_states(conn)
             user = await users_q.get(conn, user_id)
         state = next((s for s in states if s["calendar_id"] == calendar_id), None)
+        feed = next(
+            (f for f in self.feeds_for.get(user_id, []) if f.id == calendar_id), None
+        )
         if state is None:
             log.warning("sync requested for unconfigured/disabled calendar %s", calendar_id)
             return 0
@@ -341,6 +354,8 @@ class CalendarSync:
 
             seen_ids: list[str] = []
             for event in snapshot.events:
+                if feed is not None and feed.excludes(event.summary):
+                    continue  # never cached; a cached copy is retired below
                 seen_ids.append(event.provider_event_id)
                 cached = await calendar_q.cache_get(
                     conn,
@@ -376,6 +391,9 @@ class CalendarSync:
                 keep_ids=seen_ids,
             )
             for row in gone:
+                # Retired by an exclude pattern, not cancelled: not news.
+                if feed is not None and feed.excludes(row["summary"]):
+                    continue
                 # `row` is the pre-tombstone state for the gate's purposes.
                 before = dict(row, status="confirmed")
                 await consider(_cancelled_from_row(row), before)

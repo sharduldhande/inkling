@@ -207,6 +207,7 @@ def test_parse_feeds_normalizes_webcal_and_validates_ids():
         '"url": "webcal://p12.icloud.com/published/2/abc"}]}'
     )
     assert feeds[0].url == "https://p12.icloud.com/published/2/abc"
+    assert feeds[0].exclude == ()
     for bad in (
         '{"calendars": [{"id": "Bad Id", "name": "x", "url": "https://a/b"}]}',
         '{"calendars": [{"id": "a", "name": "", "url": "https://a/b"}]}',
@@ -215,6 +216,19 @@ def test_parse_feeds_normalizes_webcal_and_validates_ids():
         ' {"id": "a", "name": "y", "url": "https://a/c"}]}',
         '{"nope": []}',
         'not json',
+        '{"calendars": [{"id": "a", "name": "x", "url": "https://a/b", "exclude": "OMSCS"}]}',
+        '{"calendars": [{"id": "a", "name": "x", "url": "https://a/b", "exclude": [""]}]}',
     ):
         with pytest.raises(FeedConfigError):
             parse_feeds(bad)
+
+
+def test_parse_feeds_exclude_matches_titles_case_insensitively():
+    [feed] = parse_feeds(
+        '{"calendars": [{"id": "canvas", "name": "Canvas", "url": "https://a/b",'
+        ' "exclude": ["[OMSCS Student Center]"]}]}'
+    )
+    assert feed.excludes("Coffee Hour with David Joyner [OMSCS Student Center]")
+    assert feed.excludes("x [omscs student center]")
+    assert not feed.excludes("HW2 - Programming [CS-7650-A]")
+    assert not feed.excludes(None)

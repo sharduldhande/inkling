@@ -317,6 +317,37 @@ async def test_removed_event_is_tombstoned_and_gated_as_cancellation(db: Databas
     assert row["status"] == "confirmed"
 
 
+async def test_excluded_events_are_never_cached_and_retire_silently(db: Database):
+    provider = StubProvider()
+    provider.snapshots = [
+        Snapshot(events=[
+            _evt("coffee", starts_in=timedelta(hours=2),
+                 summary="Coffee Hour [OMSCS Student Center]"),
+        ], cursor="etag:1"),
+    ]
+    sync = await _registered(db, provider)
+    await sync.sync_calendar(USER_A, "primary", now=NOW)  # cached pre-exclude
+
+    feeds = [FeedSpec(id="primary", name="Personal", url="https://example.test/a.ics",
+                      exclude=("[omscs student center]",))]
+    sync = CalendarSync(db, provider, {USER_A: feeds})
+    await sync.register_feeds()
+    state = (await _rows(db, USER_A, "SELECT * FROM calendar_sync_state"))[0]
+    assert state["sync_cursor"] is None, "excluding feeds get a full fetch"
+
+    provider.snapshots = [Snapshot(events=[
+        _evt("coffee", starts_in=timedelta(hours=2),
+             summary="Coffee Hour [OMSCS Student Center]"),
+        _evt("new", starts_in=timedelta(hours=3),
+             summary="Office Hours [OMSCS Student Center]"),
+    ], cursor="etag:2")]
+    triggers_before = len(await _rows(db, USER_A, "SELECT id FROM triggers"))
+    assert await sync.sync_calendar(USER_A, "primary", now=NOW) == 0
+    assert len(await _rows(db, USER_A, "SELECT id FROM triggers")) == triggers_before
+    cache = await _rows(db, USER_A, "SELECT provider_event_id, status FROM calendar_events_cache")
+    assert [(r["provider_event_id"], r["status"]) for r in cache] == [("coffee", "cancelled")]
+
+
 async def test_sync_all_covers_enabled_feeds_and_survives_a_bad_one(db: Database):
     class Flaky(StubProvider):
         async def snapshot(self, *, calendar_id, **kw):

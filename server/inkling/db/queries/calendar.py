@@ -36,6 +36,11 @@ SET sync_cursor = %s, last_synced_at = now()
 WHERE user_id = %s AND provider = %s AND calendar_id = %s
 """
 
+_RESET_CURSOR = """
+UPDATE calendar_sync_state SET sync_cursor = NULL
+WHERE user_id = %s AND provider = %s AND calendar_id = %s
+"""
+
 _CACHE_GET = """
 SELECT * FROM calendar_events_cache
 WHERE provider_event_id = %s AND calendar_id = %s
@@ -129,6 +134,12 @@ async def set_cursor(
     cursor: str | None,
 ) -> None:
     await conn.execute(_SET_CURSOR, (cursor, user_id, provider, calendar_id))
+
+
+async def reset_cursor(
+    conn: AsyncConnection, *, user_id: str, provider: str, calendar_id: str
+) -> None:
+    await conn.execute(_RESET_CURSOR, (user_id, provider, calendar_id))
 
 
 async def cache_get(
