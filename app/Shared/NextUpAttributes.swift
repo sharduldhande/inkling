@@ -17,6 +17,24 @@ struct NextUpAttributes: ActivityAttributes {
         /// Other items due within 7 days, overdue included.
         var more: Int
 
+        // Now / Next (optional: a server older than this build omits them,
+        // and the card falls back to the single-deadline layout).
+        /// "event" (class/meeting in progress) | "focus" | "deadline" | "clear"
+        var nowKind: String?
+        var nowTitle: String?
+        var nowDetail: String?
+        var nowUntil: Double?
+        var nowDue: Double?
+        var nowOverdue: Bool?
+        /// "event" | "deadline" | nil
+        var nextKind: String?
+        var nextTitle: String?
+        var nextAt: Double?
+        var nextDetail: String?
+
         var dueDate: Date? { due.map { Date(timeIntervalSince1970: $0) } }
+        var nowUntilDate: Date? { nowUntil.map { Date(timeIntervalSince1970: $0) } }
+        var nowDueDate: Date? { nowDue.map { Date(timeIntervalSince1970: $0) } }
+        var nextDate: Date? { nextAt.map { Date(timeIntervalSince1970: $0) } }
     }
 }

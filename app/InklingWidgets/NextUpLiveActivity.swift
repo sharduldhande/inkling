@@ -9,14 +9,14 @@ import WidgetKit
 struct NextUpLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NextUpAttributes.self) { context in
-            NextUpCard(state: context.state)
+            CardView(state: context.state)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 14)
                 .widgetURL(URL(string: "inkling://"))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.bottom) {
-                    NextUpCard(state: context.state)
+                    CardView(state: context.state)
                 }
             } compactLeading: {
                 // One small glyph (user choice): it's what the Mac menu bar
@@ -29,6 +29,120 @@ struct NextUpLiveActivity: Widget {
             }
             .widgetURL(URL(string: "inkling://"))
         }
+    }
+}
+
+/// Now / Next when the server sends it; the older single-deadline card if not.
+struct CardView: View {
+    let state: NextUpAttributes.ContentState
+
+    var body: some View {
+        if state.nowKind != nil {
+            NowNextCard(state: state)
+        } else {
+            NextUpCard(state: state)
+        }
+    }
+}
+
+struct NowNextCard: View {
+    let state: NextUpAttributes.ContentState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Label(nowLabel, systemImage: nowSymbol)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(state.nowKind == "clear" ? "All clear" : (state.nowTitle ?? ""))
+                    .font(.headline)
+                    .lineLimit(2)
+                nowLine
+            }
+            if let title = state.nextTitle, let at = state.nextDate {
+                Divider()
+                HStack(spacing: 6) {
+                    Text("NEXT")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(title)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(nextWhen(at))
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var nowLabel: String {
+        switch state.nowKind {
+        case "event": "NOW"
+        case "focus": "NOW · FOCUS"
+        case "deadline": "NOW · DEADLINE"
+        default: "NOW"
+        }
+    }
+
+    private var nowSymbol: String {
+        switch state.nowKind {
+        case "event": "calendar"
+        case "focus": "scope"
+        case "deadline": "graduationcap"
+        default: "checkmark.circle"
+        }
+    }
+
+    /// Second line of NOW; relative times tick on their own, no pushes.
+    @ViewBuilder
+    private var nowLine: some View {
+        switch state.nowKind {
+        case "event":
+            HStack(spacing: 4) {
+                if let room = state.nowDetail {
+                    Text(room).lineLimit(1)
+                    Text("·")
+                }
+                if let until = state.nowUntilDate {
+                    Text("until \(until.formatted(.dateTime.hour().minute()))")
+                        .fixedSize()
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        case "deadline":
+            if let due = state.nowDueDate {
+                if state.nowOverdue == true {
+                    (Text("Overdue ") + Text(due, style: .relative))
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.red)
+                } else {
+                    Text("Due \(clock(due))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        case "clear":
+            Text("Nothing scheduled or due")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// "3:30 PM" today, "Fri 3:30 PM" later.
+    private func clock(_ at: Date) -> String {
+        Calendar.current.isDateInToday(at)
+            ? at.formatted(.dateTime.hour().minute())
+            : at.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+    }
+
+    /// Deadlines say "due"; events are just their start time.
+    private func nextWhen(_ at: Date) -> String {
+        state.nextKind == "deadline" ? "due \(clock(at))" : clock(at)
     }
 }
 
@@ -101,8 +215,22 @@ struct NextUpGlyph: View {
     let state: NextUpAttributes.ContentState
 
     var body: some View {
-        Image(systemName: state.kind == "deadline" ? "graduationcap.fill" : "checklist")
+        Image(systemName: symbol)
             .font(.caption.weight(.semibold))
-            .foregroundStyle(state.overdue ? Color.red : Color.primary)
+            .foregroundStyle(overdue ? Color.red : Color.primary)
+    }
+
+    private var symbol: String {
+        switch state.nowKind {
+        case "event": "calendar"
+        case "focus": "scope"
+        case "deadline": "graduationcap.fill"
+        case "clear": "checkmark"
+        default: state.kind == "deadline" ? "graduationcap.fill" : "checklist"
+        }
+    }
+
+    private var overdue: Bool {
+        state.nowKind == nil ? state.overdue : state.nowOverdue == true
     }
 }
