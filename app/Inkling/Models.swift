@@ -333,6 +333,33 @@ struct DeviceRegistration: Encodable {
     }
 }
 
+struct LiveActivityRegistration: Encodable {
+    struct Current: Encodable {
+        let id: String
+        let token: String
+    }
+
+    let environment: String
+    let enabled: Bool
+    let startToken: String?
+    let activity: Current?
+
+    enum CodingKeys: String, CodingKey {
+        case environment, enabled, activity
+        case startToken = "start_token"
+    }
+
+    // Explicit so a nil activity goes over the wire as null ("nothing on
+    // screen"), not as a missing key.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(environment, forKey: .environment)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encodeIfPresent(startToken, forKey: .startToken)
+        try container.encode(activity, forKey: .activity)
+    }
+}
+
 extension Notification.Name {
     static let inklingUnauthorized = Notification.Name("InklingUnauthorized")
     static let inklingDataShouldRefresh = Notification.Name("InklingDataShouldRefresh")

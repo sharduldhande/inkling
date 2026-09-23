@@ -90,6 +90,7 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task { await refreshAll() }
+            Task { await LiveActivityRegistrar.shared.report() }
         }
         .onChange(of: showingSettings) { wasShowing, isShowing in
             guard wasShowing, !isShowing, settings.hasToken else { return }

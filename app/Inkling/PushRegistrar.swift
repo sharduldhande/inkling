@@ -14,6 +14,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        // Here, not in a view: a server push-to-start wakes the app in the
+        // background with no UI, and the new card's token must still reach
+        // the server.
+        Task { @MainActor in LiveActivityRegistrar.shared.start() }
         return true
     }
 

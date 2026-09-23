@@ -239,6 +239,23 @@ struct InklingClient: @unchecked Sendable {
         }
     }
 
+    /// POST /live-activity: the "next up" card's tokens (see LiveActivityRegistrar).
+    func registerLiveActivity(_ registration: LiveActivityRegistration) async throws {
+        var request = try request(path: "live-activity", authenticated: true)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(registration)
+        let response: URLResponse
+        do {
+            (_, response) = try await session.data(for: request)
+        } catch {
+            throw InklingClientError.transport
+        }
+        guard let http = response as? HTTPURLResponse else { throw InklingClientError.transport }
+        if http.statusCode == 401 { throw InklingClientError.unauthorized }
+        guard http.statusCode == 200 else { throw InklingClientError.status(http.statusCode) }
+    }
+
     /// POST /documents with the photo as multipart/form-data (§B8.7 shape).
     /// 202 → parsed body; 4xx with an `error` string → `.rejected(reason)`.
     func uploadPhoto(

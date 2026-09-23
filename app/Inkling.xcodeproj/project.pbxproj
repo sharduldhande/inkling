@@ -25,6 +25,12 @@
 		A10000000000000000000014 /* PushRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* PushRegistrar.swift */; };
 		A1000000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* Assets.xcassets */; };
 		A1000000000000000000000F /* Inkling.icon in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* Inkling.icon */; };
+		B10000000000000000000001 /* NextUpAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* NextUpAttributes.swift */; };
+		B10000000000000000000002 /* NextUpAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* NextUpAttributes.swift */; };
+		B10000000000000000000003 /* InklingWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* InklingWidgetsBundle.swift */; };
+		B10000000000000000000004 /* NextUpLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* NextUpLiveActivity.swift */; };
+		B10000000000000000000005 /* InklingWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* InklingWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B10000000000000000000006 /* LiveActivityRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* LiveActivityRegistrar.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -49,6 +55,12 @@
 		A2000000000000000000000F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A20000000000000000000010 /* Inkling.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Inkling.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000011 /* Inkling.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = Inkling.icon; sourceTree = "<group>"; };
+		B20000000000000000000001 /* NextUpAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextUpAttributes.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* InklingWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InklingWidgetsBundle.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* NextUpLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextUpLiveActivity.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B20000000000000000000005 /* InklingWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = InklingWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B20000000000000000000006 /* LiveActivityRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityRegistrar.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,7 +71,46 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B30000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B30000000000000000000004 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				B10000000000000000000005 /* InklingWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXContainerItemProxy section */
+		B60000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A60000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B50000000000000000000001;
+			remoteInfo = InklingWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		B60000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B50000000000000000000001 /* InklingWidgets */;
+			targetProxy = B60000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXGroup section */
 		A40000000000000000000001 = {
@@ -67,6 +118,8 @@
 			children = (
 				A20000000000000000000011 /* Inkling.icon */,
 				A40000000000000000000002 /* Inkling */,
+				B40000000000000000000001 /* Shared */,
+				B40000000000000000000002 /* InklingWidgets */,
 				A40000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -90,6 +143,7 @@
 				A20000000000000000000012 /* DeepgramTranscriptionService.swift */,
 				A20000000000000000000013 /* CameraPicker.swift */,
 				A20000000000000000000014 /* PushRegistrar.swift */,
+				B20000000000000000000006 /* LiveActivityRegistrar.swift */,
 				A2000000000000000000000F /* Info.plist */,
 				A20000000000000000000015 /* Inkling.entitlements */,
 				A2000000000000000000000E /* Assets.xcassets */,
@@ -101,8 +155,27 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000010 /* Inkling.app */,
+				B20000000000000000000005 /* InklingWidgets.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B40000000000000000000001 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				B20000000000000000000001 /* NextUpAttributes.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		B40000000000000000000002 /* InklingWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				B20000000000000000000002 /* InklingWidgetsBundle.swift */,
+				B20000000000000000000003 /* NextUpLiveActivity.swift */,
+				B20000000000000000000004 /* Info.plist */,
+			);
+			path = InklingWidgets;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -115,15 +188,34 @@
 				A30000000000000000000002 /* Sources */,
 				A30000000000000000000001 /* Frameworks */,
 				A30000000000000000000003 /* Resources */,
+				B30000000000000000000004 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				B60000000000000000000002 /* PBXTargetDependency */,
 			);
 			name = Inkling;
 			productName = Inkling;
 			productReference = A20000000000000000000010 /* Inkling.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B50000000000000000000001 /* InklingWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B90000000000000000000001 /* Build configuration list for PBXNativeTarget "InklingWidgets" */;
+			buildPhases = (
+				B30000000000000000000001 /* Sources */,
+				B30000000000000000000002 /* Frameworks */,
+				B30000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = InklingWidgets;
+			productName = InklingWidgets;
+			productReference = B20000000000000000000005 /* InklingWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -137,6 +229,9 @@
 				TargetAttributes = {
 					A50000000000000000000001 = {
 						CreatedOnToolsVersion = 15.0;
+					};
+					B50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
 					};
 				};
 			};
@@ -154,6 +249,7 @@
 			projectRoot = "";
 			targets = (
 				A50000000000000000000001 /* Inkling */,
+				B50000000000000000000001 /* InklingWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -165,6 +261,13 @@
 			files = (
 				A1000000000000000000000E /* Assets.xcassets in Resources */,
 				A1000000000000000000000F /* Inkling.icon in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B30000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -191,6 +294,18 @@
 				A10000000000000000000012 /* DeepgramTranscriptionService.swift in Sources */,
 				A10000000000000000000013 /* CameraPicker.swift in Sources */,
 				A10000000000000000000014 /* PushRegistrar.swift in Sources */,
+				B10000000000000000000006 /* LiveActivityRegistrar.swift in Sources */,
+				B10000000000000000000001 /* NextUpAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B30000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000003 /* InklingWidgetsBundle.swift in Sources */,
+				B10000000000000000000004 /* NextUpLiveActivity.swift in Sources */,
+				B10000000000000000000002 /* NextUpAttributes.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -287,6 +402,50 @@
 			};
 			name = Release;
 		};
+		B80000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = InklingWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks");
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sharduldhande.inkling.InklingWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		B80000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = InklingWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks");
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sharduldhande.inkling.InklingWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -299,6 +458,12 @@
 		A90000000000000000000002 /* Build configuration list for PBXNativeTarget "Inkling" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (A80000000000000000000001 /* Debug */, A80000000000000000000002 /* Release */);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B90000000000000000000001 /* Build configuration list for PBXNativeTarget "InklingWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (B80000000000000000000001 /* Debug */, B80000000000000000000002 /* Release */);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
