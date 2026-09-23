@@ -29,7 +29,9 @@ from inkling.jobs.consolidate import (
     is_consolidation_trigger,
 )
 from inkling.turns.commands import (
+    AppendEvent,
     CancelWakeup,
+    CompleteCommitment,
     Notify,
     ScheduleWakeup,
     SnoozeCommitment,
@@ -49,6 +51,12 @@ log = logging.getLogger(__name__)
 # invalidation). CancelWakeup is included so the scheduler drops the dead
 # entry at the next scan instead of firing into a CAS loss.
 SCHEDULE_CHANGING = (UpsertCommitment, SnoozeCommitment, ScheduleWakeup, CancelWakeup)
+# What the "next up" Live Activity shows: open commitments and their live
+# occurrences. AppendEvent is here for habit_done, which retires a day's
+# occurrence.
+AGENDA_CHANGING = (
+    UpsertCommitment, SnoozeCommitment, CompleteCommitment, AppendEvent
+)
 
 LEASE_SECONDS = 90
 HEARTBEAT_SECONDS = 30
@@ -162,6 +170,7 @@ class Worker:
         subscriber: Subscriber | None = None,
         on_schedule_change: Callable[[], None] | None = None,
         on_delivery_queued: Callable[[], None] | None = None,
+        on_agenda_change: Callable[[], None] | None = None,
     ):
         self.db = db
         self.user_id = user_id
@@ -173,6 +182,7 @@ class Worker:
         self.subscriber = subscriber
         self.on_schedule_change = on_schedule_change
         self.on_delivery_queued = on_delivery_queued
+        self.on_agenda_change = on_agenda_change
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
 
@@ -361,6 +371,12 @@ class Worker:
                 isinstance(c, Notify) for c in result.commands
             ):
                 self.on_delivery_queued()
+
+            # §11: the Live Activity card mirrors the agenda; refresh it now.
+            if self.on_agenda_change is not None and any(
+                isinstance(c, AGENDA_CHANGING) for c in result.commands
+            ):
+                self.on_agenda_change()
 
             # §15 per-turn summary line (context.py logs the token counts,
             # commit.py the accept/reject split; this is the roll-up).

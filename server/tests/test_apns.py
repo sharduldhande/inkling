@@ -117,7 +117,12 @@ async def test_send_posts_signed_alert_to_sandbox(db: Database, keypair):
     assert request.headers["apns-push-type"] == "alert"
     assert request.headers["apns-priority"] == "10"
     assert json.loads(request.content) == {
-        "aps": {"alert": {"title": "Inkling", "body": "stretch"}, "sound": "default"}
+        "aps": {
+            "alert": {"title": "Inkling", "body": "stretch"},
+            "sound": "default",
+            "interruption-level": "time-sensitive",
+            "relevance-score": 1.0,
+        }
     }
     scheme, token = request.headers["authorization"].split(" ")
     assert scheme == "bearer"

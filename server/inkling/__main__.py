@@ -121,6 +121,8 @@ async def _serve(config: Config, role: str) -> int:
     ics_provider = None
     jobs_runner = None
     jobs_task = None
+    live_activity = None
+    live_activity_task = None
     try:
         broker = Broker()
         supervisor = None
@@ -202,6 +204,12 @@ async def _serve(config: Config, role: str) -> int:
                     topic=config.apns_topic,
                 )
                 extra["apns"] = apns
+                from inkling.delivery.live_activity import LiveActivitySync
+
+                live_activity = LiveActivitySync(db, roster.user_ids, apns)
+                live_activity_task = asyncio.create_task(
+                    live_activity.run_forever(), name="live-activity"
+                )
             else:
                 log.warning(
                     "APNS_KEY_FILE unset: user pushes will dead-letter"
@@ -269,6 +277,8 @@ async def _serve(config: Config, role: str) -> int:
                     worker.on_schedule_change = scheduler.wake
                 if drainer is not None:
                     worker.on_delivery_queued = drainer.wake
+                if live_activity is not None:
+                    worker.on_agenda_change = live_activity.wake
 
         if role == "scheduler":
             try:
@@ -314,6 +324,8 @@ async def _serve(config: Config, role: str) -> int:
             db, roster, broker=broker, supervisor=supervisor,
             uploads_dir=config.export_git_dir,
         )
+        if live_activity is not None:
+            app.state.live_activity_wake = live_activity.wake
         server = uvicorn.Server(
             uvicorn.Config(
                 app,
@@ -330,6 +342,7 @@ async def _serve(config: Config, role: str) -> int:
             (drainer, drainer_task),
             (calendar_sync, calendar_task),
             (jobs_runner, jobs_task),
+            (live_activity, live_activity_task),
         ):
             if service is not None:
                 service.stop()

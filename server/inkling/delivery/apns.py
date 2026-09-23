@@ -100,7 +100,17 @@ class ApnsClient:
         self, device: dict[str, Any], *, title: str, body: str
     ) -> httpx.Response:
         host = HOSTS[device["environment"]]
-        payload = {"aps": {"alert": {"title": title, "body": body}, "sound": "default"}}
+        # time-sensitive: breaks through Focus and Scheduled Summary and holds
+        # the top of the lock screen (needs the app's time-sensitive
+        # entitlement); relevance-score ranks it first in any grouped stack.
+        payload = {
+            "aps": {
+                "alert": {"title": title, "body": body},
+                "sound": "default",
+                "interruption-level": "time-sensitive",
+                "relevance-score": 1.0,
+            }
+        }
         return await self._client.post(
             f"{host}/3/device/{device['token']}",
             content=json.dumps(payload).encode(),
@@ -120,6 +130,44 @@ class ApnsClient:
             return str(response.json().get("reason", ""))
         except ValueError:
             return ""
+
+    # --- live activity --------------------------------------------------------
+
+    async def push_live_activity(
+        self,
+        *,
+        token: str,
+        environment: str,
+        payload: dict[str, Any],
+        priority: int = 10,
+    ) -> tuple[int, str]:
+        """One liveactivity push (start/update/end); returns (status, reason).
+
+        No fan-out and no retry ladder: the live-activity syncer re-derives
+        what the card should say every pass, so a failed push is simply
+        attempted again next pass. 410/BadDeviceToken tell it to drop the token.
+        """
+        async def post() -> httpx.Response:
+            return await self._client.post(
+                f"{HOSTS[environment]}/3/device/{token}",
+                content=json.dumps(payload).encode(),
+                headers={
+                    "authorization": f"bearer {self._provider_token()}",
+                    "apns-topic": f"{self.topic}.push-type.liveactivity",
+                    "apns-push-type": "liveactivity",
+                    "apns-priority": str(priority),
+                    "content-type": "application/json",
+                },
+            )
+
+        try:
+            response = await post()
+            if response.status_code == 403 and self._reason(response) in PROVIDER_TOKEN_REASONS:
+                self._provider_token(force=True)
+                response = await post()
+        except httpx.HTTPError as exc:
+            return 0, f"POST failed: {exc}"
+        return response.status_code, self._reason(response)
 
     # --- channel protocol ----------------------------------------------------
 

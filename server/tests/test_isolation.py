@@ -157,6 +157,17 @@ async def devices_factory(conn, row_user):
     )
 
 
+async def live_activity_factory(conn, row_user):
+    await conn.execute(
+        """
+        INSERT INTO live_activity (user_id, environment, start_token)
+        VALUES (%s, 'development', %s)
+        ON CONFLICT (user_id) DO NOTHING
+        """,
+        (row_user, uuid.uuid4().hex * 2),
+    )
+
+
 async def docs_factory(conn, row_user):
     await conn.execute(
         """
@@ -240,6 +251,7 @@ TABLE_FACTORIES = {
     "body_metrics": body_metrics_factory,
     "deliveries": deliveries_factory,
     "devices": devices_factory,
+    "live_activity": live_activity_factory,
     "docs": docs_factory,
     "transcript": transcript_factory,
     "scheduled_wakeups": scheduled_wakeups_factory,
