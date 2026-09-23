@@ -22,6 +22,7 @@ from inkling.api import (
     routes_documents,
     routes_done,
     routes_live_activity,
+    routes_mcp,
     routes_panes,
 )
 from inkling.api.auth import Roster
@@ -46,6 +47,7 @@ def create_app(
     broker: Broker | None = None,
     supervisor: Supervisor | None = None,
     uploads_dir: str = "",  # EXPORT_GIT_DIR; §14 originals land under uploads/
+    mcp_tokens: dict[str, str] | None = None,  # {user_id: secret} for /mcp/<secret>
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -63,6 +65,7 @@ def create_app(
     app.state.broker = broker or Broker()
     app.state.supervisor = supervisor or _NoSupervisor()
     app.state.uploads_dir = uploads_dir
+    app.state.mcp_tokens = mcp_tokens or {}
 
     app.include_router(routes_health.router)
     app.include_router(routes_history.router)
@@ -72,6 +75,7 @@ def create_app(
     app.include_router(routes_devices.router)
     app.include_router(routes_live_activity.router)
     app.include_router(routes_done.router)
+    app.include_router(routes_mcp.router)
 
     @app.exception_handler(404)
     async def not_found(request: Request, exc) -> Response:

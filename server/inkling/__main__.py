@@ -320,10 +320,15 @@ async def _serve(config: Config, role: str) -> int:
 
         from inkling.api.server import create_app
 
+        from inkling.api.routes_mcp import load_mcp_tokens
+
         app = create_app(
             db, roster, broker=broker, supervisor=supervisor,
             uploads_dir=config.export_git_dir,
+            mcp_tokens=load_mcp_tokens(config.mcp_tokens_file),
         )
+        if scheduler is not None:
+            app.state.schedule_wake = scheduler.wake
         if live_activity is not None:
             app.state.live_activity_wake = live_activity.wake
         server = uvicorn.Server(

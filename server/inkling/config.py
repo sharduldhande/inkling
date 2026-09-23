@@ -10,6 +10,9 @@ class Config(BaseSettings):
     port: int = 8899
     bind: str = "127.0.0.1"
     chat_tokens_file: str = ""
+    # {user_id: secret}: each secret is a path segment of that user's MCP
+    # connector URL (/mcp/<secret>). Unset = no MCP endpoint.
+    mcp_tokens_file: str = ""
     ntfy_base: str = "https://ntfy.sh"
     operator_ntfy: str = ""  # §11 dead-letter alerts; empty disables them
     # APNs provider auth (§11): user pushes go straight to Apple. Empty key

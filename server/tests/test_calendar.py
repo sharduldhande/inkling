@@ -380,5 +380,12 @@ def test_no_calendar_write_surface_exists():
         offenders = [n for n in dir(cls) if not n.startswith("_") and forbidden.search(n)]
         assert offenders == [], f"{cls.__name__} exposes {offenders}"
     assert not hasattr(adapter_mod, "SyncPage")
-    rendered = str(commands_json_schema())
-    assert "Calendar" not in rendered, "no calendar command of any kind in the model's schema"
+    # The model's only calendar-named command is MarkCalendarDone: Inkling's
+    # own done-annotation on its cached copy (user decision 2026-09-23,
+    # Gradescope submissions). It can name an item and flip a flag — no
+    # field could create, move or retitle an event.
+    schema = commands_json_schema()
+    defs = schema.get("$defs", {})
+    calendar_defs = sorted(name for name in defs if "Calendar" in name)
+    assert calendar_defs == ["MarkCalendarDone"], calendar_defs
+    assert set(defs["MarkCalendarDone"]["properties"]) == {"type", "title", "done"}
