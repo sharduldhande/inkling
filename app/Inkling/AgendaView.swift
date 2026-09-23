@@ -2,7 +2,11 @@ import SwiftUI
 
 struct AgendaView: View {
     @Bindable var store: AgendaStore
-    let tapped: (AgendaItem) -> Void
+    let openInChat: (AgendaItem) -> Void
+    let markDone: (AgendaItem) -> Void
+
+    /// The row whose action dialog is up: tap asks "Mark done" or "Open in chat".
+    @State private var selected: AgendaItem?
 
     // Vertical split: realtime tasks (one-shots + calendar) above, recurring
     // habits below. Server order holds within each filter: live recurring by
@@ -34,6 +38,21 @@ struct AgendaView: View {
             .padding()
         }
         .refreshable { await store.refresh() }
+        .confirmationDialog(
+            selected?.title ?? "",
+            isPresented: Binding(
+                get: { selected != nil },
+                set: { if !$0 { selected = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: selected
+        ) { item in
+            if !item.isDone {
+                Button("Mark done") { markDone(item) }
+            }
+            Button("Open in chat") { openInChat(item) }
+            Button("Cancel", role: .cancel) {}
+        }
         .overlay(alignment: .top) {
             if store.showRefreshBanner { refreshBanner }
         }
@@ -62,7 +81,7 @@ struct AgendaView: View {
     }
 
     private func row(for item: AgendaItem) -> some View {
-        Button { tapped(item) } label: {
+        Button { selected = item } label: {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     if item.isDone {
@@ -107,7 +126,7 @@ struct AgendaView: View {
     }
 
     private var refreshBanner: some View {
-        Text("Couldn't refresh — showing cached data.")
+        Text(store.bannerText)
             .font(.caption)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)

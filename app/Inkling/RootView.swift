@@ -38,6 +38,12 @@ struct RootView: View {
                 AgendaView(store: agendaStore) { item in
                     chatStore.setPrefill(item.chatPrefill)
                     selectedTab = .chat
+                } markDone: { item in
+                    Task {
+                        if await agendaStore.markDone(item) {
+                            await chatStore.syncHistory()
+                        }
+                    }
                 }
                 .navigationTitle("Today")
                 .toolbar { settingsToolbar }
