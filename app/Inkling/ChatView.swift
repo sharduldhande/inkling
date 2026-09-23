@@ -104,10 +104,24 @@ struct ChatView: View {
                         // (viewport and bottom-marker update out of sync),
                         // and a sent bubble landing behind the keyboard
                         // reads as a lost message.
-                        let sentByUser = new.count > old.count && new.last?.isUser == true
+                        // send() appends the user bubble AND the streaming
+                        // assistant placeholder (typing dots) in one run, so
+                        // this fires once with the placeholder last; a
+                        // last-only check missed the send and the dots
+                        // landed behind the input bar.
+                        let appended = new.count > old.count ? new.suffix(new.count - old.count) : []
+                        let sentByUser = appended.contains {
+                            $0.isUser || ($0.state == .streaming && $0.text.isEmpty)
+                        }
                         if nearBottom || sentByUser {
                             showNewPill = false
                             withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                            if sentByUser {
+                                // Re-anchor once the new rows have laid out.
+                                DispatchQueue.main.async {
+                                    withAnimation { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                                }
+                            }
                         } else {
                             showNewPill = true
                         }
