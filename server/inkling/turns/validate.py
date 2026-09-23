@@ -31,6 +31,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+from inkling.db.queries import calendar as calendar_q
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import docs as docs_q
 from inkling.db.queries import documents as documents_q
@@ -42,6 +43,7 @@ from inkling.turns.commands import (
     CancelWakeup,
     Command,
     CompleteCommitment,
+    MarkCalendarDone,
     LogMeal,
     LogWeight,
     LogWorkout,
@@ -382,6 +384,32 @@ async def _validate_complete(
     return None
 
 
+async def resolve_calendar_title(
+    conn: AsyncConnection, title: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """One live calendar item by exact title, or why not (shared with apply)."""
+    rows = await calendar_q.by_title(conn, title)
+    if not rows:
+        return None, (
+            f"no calendar item titled {title!r} in the last 30 / next 90 days; "
+            "use the exact title as it appears under ## Calendar"
+        )
+    if len(rows) > 1:
+        dates = ", ".join(r["starts_at"].strftime("%a %m-%d") for r in rows)
+        return None, (
+            f"{len(rows)} calendar items are titled {title!r} ({dates}); "
+            "ask the user which one"
+        )
+    return rows[0], None
+
+
+async def _validate_mark_calendar(
+    conn: AsyncConnection, cmd: MarkCalendarDone
+) -> str | None:
+    _, reason = await resolve_calendar_title(conn, cmd.title)
+    return reason
+
+
 async def _validate_snooze(conn: AsyncConnection, cmd: SnoozeCommitment) -> str | None:
     _, reason = await _load_open_commitment(conn, cmd.id, cmd.expected_version)
     return reason
@@ -566,6 +594,8 @@ async def validate_commands(
             reason = await _validate_complete(conn, cmd)
         elif isinstance(cmd, SnoozeCommitment):
             reason = await _validate_snooze(conn, cmd)
+        elif isinstance(cmd, MarkCalendarDone):
+            reason = await _validate_mark_calendar(conn, cmd)
         elif isinstance(cmd, UpdateWorkingState):
             reason = await _validate_update_working_state(conn, cmd)
             if reason is None and not has_notify and _PUSH_CLAIM.search(cmd.new_content):

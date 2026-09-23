@@ -185,6 +185,17 @@ class CancelWakeup(_CommandBase):
     id: int
 
 
+class MarkCalendarDone(_CommandBase):
+    """The user says a calendar deadline is handled (e.g. a Canvas assignment
+    submitted via Gradescope). `title` is the item's exact title as shown in
+    ## Calendar; done=false undoes a mistaken mark. The feed itself stays
+    read-only — this is Inkling's own annotation."""
+
+    type: Literal["MarkCalendarDone"]
+    title: str
+    done: bool = True
+
+
 class Notify(_CommandBase):  # rare: extra push beyond the reply
     type: Literal["Notify"]
     body: str
@@ -225,6 +236,7 @@ Command = Annotated[
     | SetTargets
     | UpsertCommitment
     | CompleteCommitment
+    | MarkCalendarDone
     | SnoozeCommitment
     | UpdateWorkingState
     | ScheduleWakeup

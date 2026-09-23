@@ -175,7 +175,8 @@ def _calendar_line(row: dict[str, Any], tz: ZoneInfo) -> str:
                 when += f"–{end.strftime('%a %m-%d %H:%M')}"
     title = row["summary"] or "(untitled)"
     label = f" [{row['calendar_summary']}]" if row.get("calendar_summary") else ""
-    return f"- {when} {title}{label}"
+    done = " — ✓ user marked done" if row.get("done_at") else ""
+    return f"- {when} {title}{label}{done}"
 
 
 def _commitment_line(row: dict[str, Any], tz: ZoneInfo, now: datetime) -> str:

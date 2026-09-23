@@ -20,6 +20,7 @@ from inkling.api import routes_chat, routes_health, routes_history
 from inkling.api import (
     routes_devices,
     routes_documents,
+    routes_done,
     routes_live_activity,
     routes_panes,
 )
@@ -70,6 +71,7 @@ def create_app(
     app.include_router(routes_documents.router)
     app.include_router(routes_devices.router)
     app.include_router(routes_live_activity.router)
+    app.include_router(routes_done.router)
 
     @app.exception_handler(404)
     async def not_found(request: Request, exc) -> Response:

@@ -1,4 +1,5 @@
-"""Read-only pane projections keep chat as the sole user-facing write path.
+"""Read-only pane projections; chat is the main user-facing write path (the
+one pane write, "Mark done", lives in routes_done).
 
 Agenda and measurement windows are fixed server-side so every client sees the
 same slice. Daily health totals are bucketed in the roster user's stored IANA
@@ -88,6 +89,22 @@ ORDER BY c.id, e.occurred_at DESC
 LIMIT 50
 """
 
+# Calendar items the user marked done (Gradescope submissions Canvas never
+# hears about) sit in Done for a day, like commitments.
+_AGENDA_CALENDAR_DONE = """
+SELECT
+  'g:' || provider_event_id AS id,
+  coalesce(summary, '(untitled)') AS title,
+  (extract(epoch FROM starts_at) * 1000)::bigint AS starts,
+  (extract(epoch FROM done_at) * 1000)::bigint AS done_ts
+FROM calendar_events_cache
+WHERE user_id = %s
+  AND status <> 'cancelled'
+  AND done_at >= now() - interval '24 hours'
+ORDER BY done_at DESC
+LIMIT 50
+"""
+
 _AGENDA_CALENDAR = """
 SELECT
   'g:' || c.provider_event_id AS id,
@@ -105,6 +122,7 @@ WHERE c.user_id = %s
   AND c.status <> 'cancelled'
   AND coalesce(s.enabled, true)
   AND c.starts_at IS NOT NULL
+  AND c.done_at IS NULL
   AND coalesce(c.ends_at, c.starts_at) >= now()
   AND c.starts_at <= now() + interval '48 hours'
 ORDER BY c.starts_at, c.provider_event_id
@@ -259,6 +277,8 @@ async def agenda(
         calendar_rows = await cur.fetchall()
         cur = await conn.execute(_AGENDA_DONE, (user_id,))
         done_rows = await cur.fetchall()
+        cur = await conn.execute(_AGENDA_CALENDAR_DONE, (user_id,))
+        done_calendar_rows = await cur.fetchall()
         cur = await conn.execute(
             _AGENDA_DONE_RECURRING, (user_id, user_id, timezone, timezone)
         )
@@ -313,6 +333,17 @@ async def agenda(
             "done_ts": int(r["done_ts"]),
         }
         for r in done_rows
+    )
+    items.extend(
+        {
+            "id": r["id"],
+            "kind": "calendar",
+            "title": r["title"],
+            "starts": int(r["starts"]),
+            "done": True,
+            "done_ts": int(r["done_ts"]),
+        }
+        for r in done_calendar_rows
     )
     items.extend(
         sorted(

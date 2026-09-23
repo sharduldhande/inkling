@@ -79,7 +79,7 @@ RETURNING *
 _UPCOMING = """
 SELECT
   c.provider_event_id, c.calendar_id, c.summary, c.starts_at, c.ends_at,
-  c.all_day, s.summary AS calendar_summary
+  c.all_day, c.done_at, s.summary AS calendar_summary
 FROM calendar_events_cache c
 LEFT JOIN calendar_sync_state s
   ON s.user_id = c.user_id AND s.calendar_id = c.calendar_id
@@ -91,6 +91,52 @@ WHERE c.status <> 'cancelled'
 ORDER BY c.starts_at, c.provider_event_id
 LIMIT %s
 """
+
+
+# Resolving a calendar item by the title the model (or user) names: exact,
+# case-insensitive, among live items from a month back to three months out.
+_BY_TITLE = """
+SELECT provider_event_id, calendar_id, summary, starts_at, all_day, done_at
+FROM calendar_events_cache
+WHERE status <> 'cancelled'
+  AND starts_at IS NOT NULL
+  AND starts_at >= now() - interval '30 days'
+  AND starts_at <= now() + interval '90 days'
+  AND lower(trim(summary)) = lower(trim(%s))
+ORDER BY starts_at
+LIMIT 10
+"""
+
+_GET_LIVE = """
+SELECT * FROM calendar_events_cache
+WHERE provider_event_id = %s AND status <> 'cancelled'
+"""
+
+_SET_DONE = """
+UPDATE calendar_events_cache
+SET done_at = CASE WHEN %s THEN coalesce(done_at, now()) END
+WHERE provider_event_id = %s
+RETURNING *
+"""
+
+
+async def by_title(conn: AsyncConnection, title: str) -> list[dict[str, Any]]:
+    cur = await conn.execute(_BY_TITLE, (title,))
+    return await cur.fetchall()
+
+
+async def get_live(
+    conn: AsyncConnection, provider_event_id: str
+) -> dict[str, Any] | None:
+    cur = await conn.execute(_GET_LIVE, (provider_event_id,))
+    return await cur.fetchone()
+
+
+async def set_done(
+    conn: AsyncConnection, provider_event_id: str, *, done: bool
+) -> dict[str, Any] | None:
+    cur = await conn.execute(_SET_DONE, (done, provider_event_id))
+    return await cur.fetchone()
 
 
 async def states(conn: AsyncConnection) -> list[dict[str, Any]]:

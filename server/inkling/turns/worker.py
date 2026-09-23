@@ -32,6 +32,7 @@ from inkling.turns.commands import (
     AppendEvent,
     CancelWakeup,
     CompleteCommitment,
+    MarkCalendarDone,
     Notify,
     ScheduleWakeup,
     SnoozeCommitment,
@@ -55,7 +56,8 @@ SCHEDULE_CHANGING = (UpsertCommitment, SnoozeCommitment, ScheduleWakeup, CancelW
 # occurrences. AppendEvent is here for habit_done, which retires a day's
 # occurrence.
 AGENDA_CHANGING = (
-    UpsertCommitment, SnoozeCommitment, CompleteCommitment, AppendEvent
+    UpsertCommitment, SnoozeCommitment, CompleteCommitment, AppendEvent,
+    MarkCalendarDone,
 )
 
 LEASE_SECONDS = 90

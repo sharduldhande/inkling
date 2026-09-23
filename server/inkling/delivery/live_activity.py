@@ -64,6 +64,7 @@ SELECT * FROM (
   WHERE c.user_id = %(user_id)s
     AND c.calendar_id = ANY(%(calendars)s)
     AND c.status <> 'cancelled'
+    AND c.done_at IS NULL
     AND coalesce(s.enabled, true)
     AND c.starts_at IS NOT NULL
     AND (c.all_day OR c.ends_at IS NULL OR c.ends_at = c.starts_at)

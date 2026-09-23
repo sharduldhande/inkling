@@ -19,6 +19,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+from inkling.db.queries import calendar as calendar_q
 from inkling.db.queries import commitments as commitments_q
 from inkling.db.queries import deliveries as deliveries_q
 from inkling.db.queries import docs as docs_q
@@ -33,6 +34,7 @@ from inkling.turns.commands import (
     Command,
     CompleteCommitment,
     LogMeal,
+    MarkCalendarDone,
     LogWeight,
     LogWorkout,
     Notify,
@@ -472,6 +474,33 @@ async def _apply_notify(
     return {"delivery_id": int(row["id"]) if row else None, "duplicate": row is None}
 
 
+async def _apply_mark_calendar(
+    conn: AsyncConnection, cmd: MarkCalendarDone, *, user_id: str, turn_id: int
+) -> dict[str, Any]:
+    from inkling.turns.validate import resolve_calendar_title
+
+    row, reason = await resolve_calendar_title(conn, cmd.title)
+    if row is None:
+        raise ConcurrentModification(f"calendar item vanished mid-turn: {reason}")
+    await calendar_q.set_done(conn, row["provider_event_id"], done=cmd.done)
+    await events_q.insert(
+        conn,
+        user_id=user_id,
+        occurred_at=None,
+        kind="system",
+        habit_id=None,
+        value_num=None,
+        unit=None,
+        note=(
+            f"{'marked' if cmd.done else 'unmarked'} calendar item "
+            f"{row['summary']!r} as done"
+        ),
+        source="agent",
+        turn_id=turn_id,
+    )
+    return {"provider_event_id": row["provider_event_id"], "done": cmd.done}
+
+
 async def apply_command(
     conn: AsyncConnection,
     cmd: Command,
@@ -512,6 +541,8 @@ async def apply_command(
         return await _apply_complete_commitment(
             conn, cmd, user_id=user_id, turn_id=turn_id
         )
+    if isinstance(cmd, MarkCalendarDone):
+        return await _apply_mark_calendar(conn, cmd, user_id=user_id, turn_id=turn_id)
     if isinstance(cmd, SnoozeCommitment):
         return await _apply_snooze_commitment(
             conn, cmd, user_id=user_id, turn_id=turn_id
