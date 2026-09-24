@@ -10,8 +10,8 @@ struct NextUpLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NextUpAttributes.self) { context in
             CardView(state: context.state)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
                 .widgetURL(URL(string: "inkling://"))
         } dynamicIsland: { context in
             DynamicIsland {
@@ -45,45 +45,38 @@ struct CardView: View {
     }
 }
 
+/// Sized to fill the lock-screen activity (~160 pt tall, user: "as big as
+/// possible"). Countdowns use the live `.offset` format, so they tick on the
+/// lock screen with no pushes.
 struct NowNextCard: View {
     let state: NextUpAttributes.ContentState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 3) {
-                Label(nowLabel, systemImage: nowSymbol)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(state.nowKind == "clear" ? "All clear" : (state.nowTitle ?? ""))
-                    .font(.headline)
-                    .lineLimit(2)
-                nowLine
-            }
+        VStack(alignment: .leading, spacing: 6) {
+            Label(nowLabel, systemImage: nowSymbol)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(state.nowKind == "clear" ? "All clear" : (state.nowTitle ?? ""))
+                .font(.title3.weight(.bold))
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+            nowLine
             if let title = state.nextTitle {
                 Divider()
-                HStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("NEXT")
-                        .font(.caption2.weight(.semibold))
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    if state.nextKind == "focus" {
-                        Image(systemName: "scope")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(title)
-                        .font(.subheadline)
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    // A focus has no time; events show their start, deadlines "due …".
-                    if let at = state.nextDate {
-                        Text(nextWhen(at))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .fixedSize()
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title)
+                            .font(.headline)
+                            .lineLimit(1)
+                        nextLine
                     }
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var nowLabel: String {
@@ -104,7 +97,6 @@ struct NowNextCard: View {
         }
     }
 
-    /// Second line of NOW; relative times tick on their own, no pushes.
     @ViewBuilder
     private var nowLine: some View {
         switch state.nowKind {
@@ -119,27 +111,58 @@ struct NowNextCard: View {
                         .fixedSize()
                 }
             }
-            .font(.subheadline)
+            .font(.body)
             .foregroundStyle(.secondary)
         case "deadline":
             if let due = state.nowDueDate {
-                if state.nowOverdue == true {
-                    (Text("Overdue ") + Text(due, style: .relative))
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.red)
-                } else {
-                    Text("Due \(clock(due))")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+                dueLine(due, overdue: state.nowOverdue == true)
+                    .font(.body.weight(.medium))
             }
         case "clear":
             Text("Nothing scheduled or due")
-                .font(.subheadline)
+                .font(.body)
                 .foregroundStyle(.secondary)
         default:
             EmptyView()
         }
+    }
+
+    @ViewBuilder
+    private var nextLine: some View {
+        switch state.nextKind {
+        case "event":
+            if let at = state.nextDate {
+                Text([clock(at), state.nextDetail].compactMap { $0 }.joined(separator: " · "))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        case "deadline":
+            if let at = state.nextDate {
+                dueLine(at, overdue: at < .now)
+                    .font(.subheadline)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    /// "Due in 2 days, 5 hours, 12 minutes" / "Overdue 3 hours, 4 minutes".
+    private func dueLine(_ due: Date, overdue: Bool) -> some View {
+        (Text(overdue ? "Overdue " : "Due in ") + countdown(due))
+            .foregroundStyle(overdue ? Color.red : Color.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+    }
+
+    private func countdown(_ due: Date) -> Text {
+        Text(
+            .currentDate,
+            format: .offset(
+                to: due, allowedFields: [.day, .hour, .minute],
+                maxFieldCount: 3, sign: .never
+            )
+        )
     }
 
     /// "3:30 PM" today, "Fri 3:30 PM" later.
@@ -147,11 +170,6 @@ struct NowNextCard: View {
         Calendar.current.isDateInToday(at)
             ? at.formatted(.dateTime.hour().minute())
             : at.formatted(.dateTime.weekday(.abbreviated).hour().minute())
-    }
-
-    /// Deadlines say "due"; events are just their start time.
-    private func nextWhen(_ at: Date) -> String {
-        state.nextKind == "deadline" ? "due \(clock(at))" : clock(at)
     }
 }
 
