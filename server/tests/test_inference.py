@@ -319,3 +319,82 @@ def test_every_gateway_accepts_the_full_protocol_signature():
         params = set(inspect.signature(cls.run_turn).parameters) - {"self"}
         missing = protocol_params - params
         assert not missing, f"{cls.__name__}.run_turn missing {sorted(missing)}"
+
+
+# --- SDK adapter stream handling (fake query; no CLI, no network) ----------
+
+def _sdk_script(monkeypatch, steps):
+    """Run AnthropicSDKGateway against a scripted stream. Steps: ("text", s)
+    yields a text_delta StreamEvent, ("emit", cmds) calls the emit_commands
+    handler the adapter registered, ("assistant", s) yields an assembled
+    AssistantMessage, ("result",) a successful ResultMessage."""
+    import claude_agent_sdk as sdk
+
+    captured = {}
+
+    def fake_server(*, name, version, tools):
+        captured["tools"] = {t.name: t for t in tools}
+        return object()
+
+    async def fake_query(*, prompt, options):
+        for step in steps:
+            kind = step[0]
+            if kind == "text":
+                yield sdk.StreamEvent(
+                    uuid="u", session_id="s",
+                    event={"type": "content_block_delta",
+                           "delta": {"type": "text_delta", "text": step[1]}},
+                )
+            elif kind == "emit":
+                await captured["tools"]["emit_commands"].handler({"commands": step[1]})
+            elif kind == "assistant":
+                yield sdk.AssistantMessage(content=[sdk.TextBlock(text=step[1])], model="m")
+            elif kind == "result":
+                yield sdk.ResultMessage(
+                    subtype="success", duration_ms=1, duration_api_ms=1,
+                    is_error=False, num_turns=1, session_id="s",
+                )
+
+    monkeypatch.setattr(sdk, "create_sdk_mcp_server", fake_server)
+    monkeypatch.setattr(sdk, "query", fake_query)
+
+
+async def _sdk_run():
+    from inkling.inference.anthropic_sdk import AnthropicSDKGateway
+
+    deltas: list[str] = []
+
+    async def on_delta(chunk: str) -> None:
+        deltas.append(chunk)
+
+    result = await AnthropicSDKGateway("/nonexistent").run_turn(
+        user_id=USER_A, system="sys", context="ctx", tools=[],
+        on_text_delta=on_delta,
+    )
+    return result, "".join(deltas)
+
+
+async def test_sdk_tool_first_reply_streams_in_full(monkeypatch):
+    # Live regression: emit_commands first, then the reply — the reply was
+    # cut to its first delta ("Got it") by the restatement guard.
+    _sdk_script(monkeypatch, [
+        ("emit", []),
+        ("text", "Got it"), ("text", " — logged"), ("text", " your run."),
+        ("assistant", "Got it — logged your run."),
+        ("result",),
+    ])
+    result, streamed = await _sdk_run()
+    assert streamed == "Got it — logged your run."
+    assert result.text == "Got it — logged your run."
+
+
+async def test_sdk_reply_first_drops_the_post_emit_restatement(monkeypatch):
+    _sdk_script(monkeypatch, [
+        ("text", "Done,"), ("text", " marked."),
+        ("emit", []),
+        ("text", "Marked it done for you."),
+        ("result",),
+    ])
+    result, streamed = await _sdk_run()
+    assert streamed == "Done, marked."
+    assert result.text == "Done, marked."

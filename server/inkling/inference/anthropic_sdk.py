@@ -117,6 +117,13 @@ class AnthropicSDKGateway:
         # exit below must not fire until the model has re-emitted clean —
         # cutting the turn there would strand the correction round.
         emit_clean = False
+        # Which order the model chose, fixed at the first emit: reply then
+        # tool (post-emit text is the restatement → drop it, exit early), or
+        # tool then reply (post-emit text IS the reply → stream all of it).
+        # Guarding on "any text yet?" per delta instead kept only the first
+        # delta of a tool-first reply and exited on the next message — live,
+        # replies cut to their first ~5-10 chars once Opus went tool-first.
+        reply_first = False
         validator = tool_handlers.get("validate_commands")
 
         # Full JSON schema, not {"commands": list}: with a bare untyped list
@@ -134,7 +141,9 @@ class AnthropicSDKGateway:
             commands_json_schema(),
         )
         async def emit_commands(args: dict[str, Any]) -> dict[str, Any]:
-            nonlocal emitted, emit_clean
+            nonlocal emitted, emit_clean, reply_first
+            if not emitted:
+                reply_first = bool(text_parts or buffer)
             emitted = True
             raw = args.get("commands") or []
             if validator is None:
@@ -301,7 +310,7 @@ class AnthropicSDKGateway:
                 # for it. A rejected emit holds the exit open for the
                 # correction round. Costs the ResultMessage: usage stays 0 on
                 # early-exit turns.
-                if emitted and emit_clean and (text_parts or buffer):
+                if emitted and emit_clean and reply_first:
                     await flush()
                     break
                 if isinstance(message, StreamEvent):
@@ -319,7 +328,7 @@ class AnthropicSDKGateway:
                         # window is still unflushed when post-emit deltas
                         # arrive, and checking text_parts alone let phase two
                         # concatenate onto it ("…that one.Deleted —", live).
-                        if emitted and (text_parts or buffer):
+                        if reply_first:
                             continue
                         streamed = True
                         buffer.append(event["delta"]["text"])
@@ -342,7 +351,7 @@ class AnthropicSDKGateway:
                             # — the model restates the reply post-tool no
                             # matter what the prompt says. Keep the first
                             # non-empty phase.
-                            if emitted and text_parts:
+                            if reply_first:
                                 log.debug("dropping post-emit restatement")
                                 continue
                             text_parts.append(block.text)
