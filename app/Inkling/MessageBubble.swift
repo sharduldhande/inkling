@@ -53,6 +53,16 @@ struct MessageBubble: View {
             } else if message.state == .streaming && message.text.isEmpty {
                 TypingDots()
                     .frame(width: 44, height: 18)
+            } else if message.state == .streaming {
+                // Text is arriving but the turn isn't done: keep a small
+                // pulse under it so a pause between chunks doesn't read as
+                // a finished (or cut-off) reply.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(message.text)
+                        .textSelection(.enabled)
+                    TypingDots(dotSize: 5)
+                        .frame(height: 10)
+                }
             } else {
                 Text(message.text)
                     .textSelection(.enabled)
@@ -106,14 +116,15 @@ struct MessageBubble: View {
 }
 
 private struct TypingDots: View {
+    var dotSize: CGFloat = 7
     @State private var animated = false
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: dotSize * 0.7) {
             ForEach(0..<3, id: \.self) { index in
                 Circle()
                     .fill(.secondary)
-                    .frame(width: 7, height: 7)
+                    .frame(width: dotSize, height: dotSize)
                     .opacity(animated ? 0.3 : 1)
                     .animation(
                         .easeInOut(duration: 0.55).repeatForever(autoreverses: true).delay(Double(index) * 0.16),
