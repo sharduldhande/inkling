@@ -194,9 +194,37 @@ async def test_route_rejects_bad_input(client):
         {"environment": "development", "start_token": "not hex"},
         {"environment": "development", "activity": {"id": "x"}},
         {"environment": "development", "enabled": "yes"},
+        {"environment": "development", "start_here": "yes"},
     ):
         r = await client.post("/live-activity", json=body, headers=headers)
         assert r.status_code == 422, body
+
+
+async def test_route_start_here_returns_content_and_holds_off_the_syncer(client, db):
+    """The foregrounded app starts the card itself (no push-to-start budget)."""
+    await _register(db)
+    await _commit(db, "stretch", timedelta(hours=1))
+    r = await client.post(
+        "/live-activity",
+        json={"environment": "development", "enabled": True,
+              "activity": None, "start_here": True},
+        headers={"Authorization": f"Bearer {TOKEN_A}"},
+    )
+    assert r.status_code == 200, r.text
+    content = r.json()["content"]
+    assert content["nowTitle"] == "stretch"
+    row = await _row(db)
+    assert row["started_at"] is not None and row["content"] == content
+    assert not client.woken
+
+    apns = FakeApns()
+    sync = LiveActivitySync(db, [USER_A], apns, clock=Clock())
+    assert await sync.sync_user(USER_A) == "unchanged"
+    # The app then reports the activity it started; the card is in sync.
+    async with db.with_tenant(USER_A) as conn:
+        await la_q.set_activity(conn, USER_A, activity_id="local", update_token=UPDATE)
+    assert await sync.sync_user(USER_A) == "unchanged"
+    assert apns.sent == []
 
 
 # --- sync ----------------------------------------------------------------------
