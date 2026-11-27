@@ -1,0 +1,2 @@
+# False positive: a module docstring in server/inkling/api/__init__.py (generic-api-key rule)
+3959d1423af315e0d8bc4656edc2f5e1716063ab:server/inkling/api/__init__.py:generic-api-key:1
