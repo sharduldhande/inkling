@@ -2,7 +2,6 @@
 
 A native SwiftUI client for **Inkling**, a self-hosted, proactive AI assistant that tracks commitments, deadlines and habits and reaches out on its own, via push notifications and a Live Activity on the lock screen.
 
-<p align="center"><img src="docs/chat.png" width="300" alt="Chat tab: proactive reminders sent by the server"></p>
 
 The app is a thin window onto the server: the Python backend ([`inkling-server`](https://github.com/sharduldhande/inkling-server)) owns the conversation, the state, and every scheduling decision. The app streams chat, mirrors read-only panes, and registers itself so the server can push to it.
 
